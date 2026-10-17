@@ -1,12 +1,17 @@
-use std::io;
+use std::{collections::HashMap, io, sync::Arc};
 
+use common::{
+    Channel,
+    message::{ServerRequest, ServerResponse},
+};
 use interprocess::local_socket::{
     GenericNamespaced, ListenerOptions, prelude::*, tokio::Stream, traits::tokio::Listener,
 };
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    try_join,
-};
+use tokio::sync::Mutex;
+
+struct AppState {
+    pub instance_state: Mutex<HashMap<String, bool>>,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -32,6 +37,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This is a good place to inform clients that the server is ready.
     eprintln!("Server running at {printname}");
 
+    let state: Arc<AppState> = Arc::new(AppState {
+        instance_state: Mutex::new(Default::default()),
+    });
+
     loop {
         let conn = match listener.accept().await {
             Ok(c) => c,
@@ -41,29 +50,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
+        let app_state = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(conn).await {
+            if let Err(e) = handle_conn(app_state, conn).await {
                 eprintln!("Error while handling connection: {e}");
             }
         });
     }
 }
 
-async fn handle_conn(conn: Stream) -> io::Result<()> {
-    let mut recver = BufReader::new(&conn);
-    let mut sender = &conn;
+async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn std::error::Error>> {
+    let mut chan = Channel::from_stream(conn);
 
-    let mut buffer = String::with_capacity(128);
+    let ServerRequest::Initial { id } = chan.receive().await.unwrap().unwrap() else {
+        panic!();
+    };
 
-    let send = sender.write_all(b"Hello from server!\n");
-    let recv = recver.read_line(&mut buffer);
+    println!("Bound connection to id: {id}");
 
-    try_join!(recv, send)?;
+    chan.send(&ServerResponse::Initialized).await.unwrap();
 
-    // Avoid holding up resources.
-    drop(conn);
+    while let Some(message) = chan.receive::<ServerRequest>().await {
+        let message = match message {
+            Ok(msg) => msg,
+            Err(err) => {
+                println!("An unexpected error occurred: {err:?}");
+                continue;
+            }
+        };
 
-    // read_line keeps the line feed at the end.
-    print!("Client answered: {buffer}");
+        // 7. Handle the message logic
+        match message {
+            ServerRequest::Initial { .. } => {}
+            ServerRequest::Status => {
+                let lock = state.instance_state.lock().await;
+                let state = lock.get(&id).cloned().unwrap_or(false);
+                drop(lock);
+
+                let message = ServerResponse::StatusResponse { up: state };
+                chan.send(&message).await?;
+            }
+        }
+    }
+
     Ok(())
 }

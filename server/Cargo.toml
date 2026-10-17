@@ -4,6 +4,11 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 clap = { workspace = true }
 interprocess = { workspace = true }
 tokio = { workspace = true }
+common = { path = "../common" }
+postcard = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
