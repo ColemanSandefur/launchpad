@@ -4,9 +4,13 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
 base64 = { workspace = true }
 clap = { workspace = true }
-interprocess = { workspace = true }
-tokio = { workspace = true }
 common = { path = "../common" }
+dotenvy = { workspace = true }
+interprocess = { workspace = true }
+mlua = { workspace = true }
 postcard = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }

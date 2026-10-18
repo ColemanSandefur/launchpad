@@ -19,4 +19,6 @@
       "miri"
     ];
   };
+
+  languages.python.enable = true;
 }

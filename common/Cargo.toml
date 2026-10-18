@@ -4,10 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
-serde = { workspace = true }
-tokio = { workspace = true }
-tokio-util = { workspace = true }
-postcard = { workspace = true }
 futures = { workspace = true }
 interprocess = { workspace = true }
+postcard = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }

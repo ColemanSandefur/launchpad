@@ -7,6 +7,7 @@ use thiserror::Error;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 pub mod message;
+pub mod structure;
 
 #[derive(Error, Debug)]
 pub enum SendError {
@@ -34,6 +35,8 @@ impl Channel {
     {
         let bytes = postcard::to_stdvec(data)?;
 
+        println!("Sending {} bytes", bytes.len());
+
         self.channel.send(bytes.as_slice()).await?;
 
         Ok(())
@@ -48,6 +51,8 @@ impl Channel {
                 Ok(b) => b,
                 Err(err) => return Some(Err(err.into())),
             };
+
+            println!("Received {} bytes", bytes.len());
 
             let msg = match postcard::from_bytes(&bytes) {
                 Ok(val) => val,

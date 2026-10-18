@@ -6,12 +6,20 @@ members = ["client", "common", "server"]
 edition = "2024"
 
 [workspace.dependencies]
+anyhow = "1"
 base64 = "0.23"
 clap = { version = "4.6.7", features = ["derive"] }
+dotenvy = "0.15.7"
+futures = { version = "0.3", features = [] }
 interprocess = { version = "2.4.6", features = ["tokio"] }
+mlua = { version = "0.12", features = [
+  "lua54",
+  "vendored",
+  "serde",
+  "error-send",
+] }
+postcard = { version = "1", features = ["use-std", "alloc"] }
 serde = { version = "1", features = ["derive"] }
+thiserror = { version = "2" }
 tokio = { version = "1.53.3", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
-postcard = { version = "1", features = ["use-std", "alloc"] }
-futures = { version = "0.3", features = [] }
-thiserror = { version = "2" }

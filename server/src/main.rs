@@ -1,4 +1,6 @@
-use std::{collections::HashMap, io, sync::Arc};
+pub mod log;
+
+use std::{collections::HashMap, io, process::Stdio, sync::Arc};
 
 use common::{
     Channel,
@@ -9,8 +11,18 @@ use interprocess::local_socket::{
 };
 use tokio::sync::Mutex;
 
+use crate::log::LogBuffer;
+
+struct ManagedService {
+    child: tokio::process::Child, // Kept alive here so it doesn't drop/kill immediately
+    log_buffer: LogBuffer,
+}
+
+type Services = HashMap<String, ManagedService>;
+
 struct AppState {
-    pub instance_state: Mutex<HashMap<String, bool>>,
+    /// Maps service name -> Service state
+    pub instances: Mutex<HashMap<String, Services>>,
 }
 
 #[tokio::main]
@@ -38,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Server running at {printname}");
 
     let state: Arc<AppState> = Arc::new(AppState {
-        instance_state: Mutex::new(Default::default()),
+        instances: Mutex::new(HashMap::new()),
     });
 
     loop {
@@ -83,12 +95,141 @@ async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn s
         match message {
             ServerRequest::Initial { .. } => {}
             ServerRequest::Status => {
-                let lock = state.instance_state.lock().await;
-                let state = lock.get(&id).cloned().unwrap_or(false);
-                drop(lock);
+                let mut instances = state.instances.lock().await;
 
-                let message = ServerResponse::StatusResponse { up: state };
-                chan.send(&message).await?;
+                let Some(services) = instances.get_mut(&id) else {
+                    chan.send(&ServerResponse::StatusResponse {
+                        services: Default::default(),
+                    })
+                    .await
+                    .unwrap();
+                    continue;
+                };
+
+                let services = services
+                    .iter_mut()
+                    .map(|(name, service)| {
+                        let status = match service.child.try_wait() {
+                            Ok(None) => true,
+                            Ok(Some(_)) => false,
+                            Err(_) => false,
+                        };
+
+                        (name.clone(), status)
+                    })
+                    .collect();
+
+                drop(instances);
+
+                chan.send(&ServerResponse::StatusResponse { services })
+                    .await?;
+            }
+            ServerRequest::Up { structure, cwd } => {
+                let mut instances = state.instances.lock().await;
+
+                let mut services: Services = HashMap::new();
+
+                for (service_name, service) in structure.services {
+                    let mut child = service
+                        .to_command()
+                        .current_dir(&cwd)
+                        .kill_on_drop(true)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()?;
+
+                    let stdout = child.stdout.take().expect("Failed to take stdout");
+                    let stderr = child.stderr.take().expect("Failed to take stderr");
+
+                    let log_buffer = LogBuffer::new(1000);
+
+                    let buffer_clone = log_buffer.clone();
+                    tokio::spawn(async move {
+                        let reader = tokio::io::BufReader::new(stdout);
+                        let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            buffer_clone.push(line).await;
+                        }
+                    });
+
+                    let buffer_clone = log_buffer.clone();
+                    tokio::spawn(async move {
+                        let reader = tokio::io::BufReader::new(stderr);
+                        let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            buffer_clone.push(line).await;
+                        }
+                    });
+
+                    services.insert(service_name, ManagedService { child, log_buffer });
+                }
+
+                instances.insert(id.clone(), services);
+
+                drop(instances);
+
+                chan.send(&ServerResponse::Initialized).await?;
+            }
+            ServerRequest::Down => {
+                let mut instances = state.instances.lock().await;
+
+                let Some(services) = instances.get_mut(&id) else {
+                    chan.send(&ServerResponse::Initialized).await.unwrap();
+                    continue;
+                };
+
+                for (service_name, service) in services {
+                    println!("Killing service {id} - {service_name}");
+                    service.child.start_kill().unwrap();
+                }
+
+                chan.send(&ServerResponse::Initialized).await?;
+            }
+            ServerRequest::ServiceLog {
+                service_name,
+                start_idx,
+            } => {
+                let instances = state.instances.lock().await;
+
+                let Some(services) = instances.get(&id) else {
+                    chan.send(&ServerResponse::ServiceLogResponse {
+                        service_name,
+                        lines: vec![],
+                        next_idx: 0,
+                        dropped_history: false,
+                    })
+                    .await
+                    .unwrap();
+                    continue;
+                };
+
+                match services.get(&service_name) {
+                    Some(service) => {
+                        let result = service
+                            .log_buffer
+                            .get_since(start_idx.unwrap_or_default())
+                            .await;
+
+                        chan.send(&ServerResponse::ServiceLogResponse {
+                            service_name,
+                            lines: result.lines,
+                            next_idx: result.next_idx,
+                            dropped_history: result.dropped_history,
+                        })
+                        .await
+                        .unwrap();
+                    }
+                    None => {
+                        chan.send(&ServerResponse::ServiceLogResponse {
+                            service_name,
+                            lines: vec![],
+                            next_idx: 0,
+                            dropped_history: false,
+                        })
+                        .await
+                        .unwrap();
+                    }
+                };
             }
         }
     }
