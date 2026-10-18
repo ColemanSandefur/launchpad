@@ -1,5 +1,6 @@
+pub mod project_config;
+
 use std::{
-    collections::HashMap,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
@@ -17,49 +18,9 @@ use interprocess::local_socket::{
     tokio::{Stream, prelude::*},
 };
 use mlua::{Lua, LuaSerdeExt};
-use serde::Deserialize;
 use tokio::fs;
 
-#[derive(Deserialize, Debug)]
-struct ProjectConfig {
-    services: HashMap<String, ServiceConfig>,
-}
-
-#[derive(Deserialize, Debug)]
-struct ServiceConfig {
-    command: String,
-    args: Vec<String>,
-
-    #[serde(default)]
-    env_file: Option<String>,
-
-    #[serde(default)]
-    env: HashMap<String, String>,
-}
-
-impl ServiceConfig {
-    pub fn resolve_env(&self) -> HashMap<String, String> {
-        let mut env = self.env.clone();
-
-        if let Some(env_file) = &self.env_file {
-            match dotenvy::from_filename_iter(env_file) {
-                Ok(iter) => {
-                    for item in iter {
-                        match item {
-                            Ok((key, val)) => {
-                                env.entry(key).or_insert(val);
-                            }
-                            Err(e) => eprintln!("Parsing error in .env: {e}"),
-                        }
-                    }
-                }
-                Err(_) => panic!("Failed to find the file: {:?}", env_file),
-            }
-        }
-
-        env
-    }
-}
+use crate::project_config::ProjectConfig;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -84,6 +45,8 @@ enum Commands {
         name: String,
         start_idx: Option<usize>,
     },
+    /// Checks if the given config is valid
+    Validate,
 }
 
 #[tokio::main]
@@ -103,7 +66,7 @@ async fn main() -> Result<()> {
             let structure = Structure {
                 services: config
                     .services
-                    .iter()
+                    .into_iter()
                     .map(|(name, service)| {
                         (
                             name.clone(),
@@ -111,6 +74,7 @@ async fn main() -> Result<()> {
                                 program: service.command.clone(),
                                 args: service.args.clone(),
                                 env: service.resolve_env(),
+                                health_check: service.health_check.map(|h| h.into()),
                             },
                         )
                     })
@@ -137,7 +101,7 @@ async fn main() -> Result<()> {
                 panic!()
             };
 
-            println!("Status: {:?}", services);
+            println!("Status: {:#?}", services);
         }
         Commands::Logs { name, start_idx } => {
             chan.send(&ServerRequest::ServiceLog {
@@ -154,6 +118,10 @@ async fn main() -> Result<()> {
             };
 
             println!("{}", lines.join("\n"));
+        }
+        Commands::Validate => {
+            println!("Valid!");
+            println!("{config:#?}");
         }
     }
 

@@ -25,7 +25,7 @@ pub enum ServerRequest {
 pub enum ServerResponse {
     Initialized,
     StatusResponse {
-        services: HashMap<String, bool>,
+        services: HashMap<String, ServiceStatus>,
     },
     ServiceLogResponse {
         service_name: String,
@@ -33,4 +33,16 @@ pub enum ServerResponse {
         next_idx: usize,
         dropped_history: bool,
     },
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct ServiceStatus {
+    pub running: bool,
+    pub state: ServiceState,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub enum ServiceState {
+    Healthy,
+    Unhealthy,
 }

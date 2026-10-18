@@ -19,6 +19,7 @@ mlua = { version = "0.12", features = [
   "error-send",
 ] }
 postcard = { version = "1", features = ["use-std", "alloc"] }
+reqwest = "0.13.5"
 serde = { version = "1", features = ["derive"] }
 thiserror = { version = "2" }
 tokio = { version = "1.53.3", features = ["full"] }

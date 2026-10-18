@@ -1,0 +1,166 @@
+use std::{collections::HashMap, time::Duration};
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProjectConfig {
+    pub services: HashMap<String, ServiceConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ServiceConfig {
+    pub command: String,
+
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    #[serde(default)]
+    pub env_file: Option<String>,
+
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+
+    #[serde(default)]
+    pub health_check: Option<HealthCheck>,
+}
+
+impl ServiceConfig {
+    pub fn resolve_env(&self) -> HashMap<String, String> {
+        let mut env = self.env.clone();
+
+        if let Some(env_file) = &self.env_file {
+            match dotenvy::from_filename_iter(env_file) {
+                Ok(iter) => {
+                    for item in iter {
+                        match item {
+                            Ok((key, val)) => {
+                                env.entry(key).or_insert(val);
+                            }
+                            Err(e) => eprintln!("Parsing error in .env: {e}"),
+                        }
+                    }
+                }
+                Err(_) => panic!("Failed to find the file: {:?}", env_file),
+            }
+        }
+
+        env
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HealthCheck {
+    /// The specific probe to use
+    pub probe: HealthCheckProbe,
+
+    /// Seconds before first probe (default: 0)
+    #[serde(default = "default_initial_delay")]
+    pub initial_delay: u32,
+
+    /// Seconds between probes (default: 10)
+    #[serde(default = "default_period")]
+    pub period: u32,
+
+    /// Seconds before probe times out (default: 1)
+    #[serde(default = "default_probe_timeout")]
+    pub probe_timeout: u32,
+
+    /// Consecutive successes needed (default: 1)
+    #[serde(default = "default_success_threshold")]
+    pub success_threshold: u32,
+
+    /// Consecutive failures before unhealthy (default: 3)
+    #[serde(default = "default_failure_threshold")]
+    pub failure_threshold: u32,
+
+    /// Overall deadline in seconds for the process to become ready.
+    #[serde(default)]
+    pub timeout: Option<u32>,
+}
+
+fn default_initial_delay() -> u32 {
+    0
+}
+
+fn default_period() -> u32 {
+    10
+}
+
+fn default_probe_timeout() -> u32 {
+    1
+}
+
+fn default_success_threshold() -> u32 {
+    1
+}
+
+fn default_failure_threshold() -> u32 {
+    3
+}
+
+impl From<HealthCheck> for common::structure::HealthCheck {
+    fn from(value: HealthCheck) -> Self {
+        common::structure::HealthCheck {
+            probe: value.probe.into(),
+            initial_delay: Duration::from_secs(value.initial_delay.into()),
+            period: Duration::from_secs(value.period.into()),
+            probe_timeout: Duration::from_secs(value.probe_timeout.into()),
+            success_threshold: value.success_threshold,
+            failure_threshold: value.failure_threshold,
+            timeout: value.timeout.map(|t| Duration::from_secs(t.into())),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum HealthCheckProbe {
+    Http {
+        /// The port to connect to.
+        ///
+        /// The HTTP port to connect to - e.g. `8080`
+        port: u16,
+
+        /// The path to connect to.
+        ///
+        /// The path to connect to - e.g. `/health`
+        path: String,
+
+        /// The host to connect to.
+        ///
+        /// The host to connect to - e.g. `127.0.0.1`
+        #[serde(default = "default_host")]
+        host: String,
+
+        /// The schema to use.
+        ///
+        /// The schema to connect to - e.g. `http`
+        #[serde(default = "default_schema")]
+        schema: String,
+    },
+}
+
+fn default_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_schema() -> String {
+    "http".to_string()
+}
+
+impl From<HealthCheckProbe> for common::structure::HealthCheckProbe {
+    fn from(value: HealthCheckProbe) -> Self {
+        match value {
+            HealthCheckProbe::Http {
+                port,
+                path,
+                host,
+                schema,
+            } => common::structure::HealthCheckProbe::Http {
+                port,
+                path,
+                host,
+                schema,
+            },
+        }
+    }
+}

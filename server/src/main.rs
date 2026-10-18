@@ -1,14 +1,26 @@
 pub mod log;
 
-use std::{collections::HashMap, io, process::Stdio, sync::Arc};
+use std::{
+    collections::HashMap,
+    io,
+    ops::Add,
+    path::Path,
+    process::Stdio,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
+use anyhow::Result;
 use common::{
     Channel,
     message::{ServerRequest, ServerResponse},
+    structure::{HealthCheck, HealthCheckProbe, Service},
 };
 use interprocess::local_socket::{
     GenericNamespaced, ListenerOptions, prelude::*, tokio::Stream, traits::tokio::Listener,
 };
+use reqwest::{Client, ClientBuilder, Url};
 use tokio::sync::Mutex;
 
 use crate::log::LogBuffer;
@@ -16,6 +28,12 @@ use crate::log::LogBuffer;
 struct ManagedService {
     child: tokio::process::Child, // Kept alive here so it doesn't drop/kill immediately
     log_buffer: LogBuffer,
+    state: Arc<Mutex<ServiceState>>,
+}
+
+enum ServiceState {
+    Healthy,
+    Unhealthy,
 }
 
 type Services = HashMap<String, ManagedService>;
@@ -106,22 +124,30 @@ async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn s
                     continue;
                 };
 
-                let services = services
-                    .iter_mut()
-                    .map(|(name, service)| {
-                        let status = match service.child.try_wait() {
-                            Ok(None) => true,
-                            Ok(Some(_)) => false,
-                            Err(_) => false,
-                        };
+                let mut statuses = HashMap::new();
 
-                        (name.clone(), status)
-                    })
-                    .collect();
+                for (name, service) in services.into_iter() {
+                    let running = match service.child.try_wait() {
+                        Ok(None) => true,
+                        Ok(Some(_)) => false,
+                        Err(_) => false,
+                    };
+
+                    let lock = service.state.lock().await;
+                    let state = match *lock {
+                        ServiceState::Healthy => common::message::ServiceState::Healthy,
+                        ServiceState::Unhealthy => common::message::ServiceState::Unhealthy,
+                    };
+
+                    statuses.insert(
+                        name.clone(),
+                        common::message::ServiceStatus { running, state },
+                    );
+                }
 
                 drop(instances);
 
-                chan.send(&ServerResponse::StatusResponse { services })
+                chan.send(&ServerResponse::StatusResponse { services: statuses })
                     .await?;
             }
             ServerRequest::Up { structure, cwd } => {
@@ -130,38 +156,7 @@ async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn s
                 let mut services: Services = HashMap::new();
 
                 for (service_name, service) in structure.services {
-                    let mut child = service
-                        .to_command()
-                        .current_dir(&cwd)
-                        .kill_on_drop(true)
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()?;
-
-                    let stdout = child.stdout.take().expect("Failed to take stdout");
-                    let stderr = child.stderr.take().expect("Failed to take stderr");
-
-                    let log_buffer = LogBuffer::new(1000);
-
-                    let buffer_clone = log_buffer.clone();
-                    tokio::spawn(async move {
-                        let reader = tokio::io::BufReader::new(stdout);
-                        let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            buffer_clone.push(line).await;
-                        }
-                    });
-
-                    let buffer_clone = log_buffer.clone();
-                    tokio::spawn(async move {
-                        let reader = tokio::io::BufReader::new(stderr);
-                        let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            buffer_clone.push(line).await;
-                        }
-                    });
-
-                    services.insert(service_name, ManagedService { child, log_buffer });
+                    services.insert(service_name, start_service(service, &cwd).await?);
                 }
 
                 instances.insert(id.clone(), services);
@@ -235,4 +230,98 @@ async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn s
     }
 
     Ok(())
+}
+
+async fn monitor_health(check: HealthCheck, health: Arc<Mutex<ServiceState>>) -> Result<()> {
+    match check.probe {
+        HealthCheckProbe::Http {
+            port,
+            path,
+            host,
+            schema,
+        } => {
+            // let timeout = Instant::now().add(check.timeout.unwrap_or_else(|| Duration::MAX));
+            let start = Instant::now();
+            let client = Client::builder().timeout(check.probe_timeout).build()?;
+            let url = Url::from_str(&format!("{}://{}:{}", schema, host, port))?.join(&path)?;
+
+            let mut successes: u32 = 0;
+            let mut failures: u32 = 0;
+
+            loop {
+                let res = client.get(url.clone()).send().await;
+
+                if let Ok(res) = res {
+                    if res.status().is_success() {
+                        successes += 1;
+                        failures = 0;
+
+                        if successes >= check.success_threshold {
+                            let mut lock = health.lock().await;
+                            *lock = ServiceState::Healthy;
+                        }
+                    }
+                } else {
+                    failures += 1;
+                    successes = 0;
+
+                    if failures >= check.failure_threshold {
+                        let mut lock = health.lock().await;
+                        *lock = ServiceState::Unhealthy;
+                    }
+                }
+
+                // if let Some(timeout) = &check.timeout
+                //     && start.elapsed() >= *timeout
+                // {
+                //     anyhow::bail!("Failed to startup - timeout");
+                // }
+            }
+        }
+    }
+}
+
+async fn start_service(service: Service, cwd: impl AsRef<Path>) -> Result<ManagedService> {
+    let mut child = service
+        .to_command()
+        .current_dir(cwd)
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let stdout = child.stdout.take().expect("Failed to take stdout");
+    let stderr = child.stderr.take().expect("Failed to take stderr");
+
+    let log_buffer = LogBuffer::new(1000);
+
+    let buffer_clone = log_buffer.clone();
+    tokio::spawn(async move {
+        let reader = tokio::io::BufReader::new(stdout);
+        let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
+        while let Ok(Some(line)) = lines.next_line().await {
+            buffer_clone.push(line).await;
+        }
+    });
+
+    let buffer_clone = log_buffer.clone();
+    tokio::spawn(async move {
+        let reader = tokio::io::BufReader::new(stderr);
+        let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
+        while let Ok(Some(line)) = lines.next_line().await {
+            buffer_clone.push(line).await;
+        }
+    });
+
+    let state = Arc::new(Mutex::new(ServiceState::Unhealthy));
+    if let Some(health_check) = service.health_check {
+        let state = state.clone();
+        tokio::spawn(monitor_health(health_check, state));
+    }
+
+    Ok(ManagedService {
+        child,
+        log_buffer,
+        state,
+    })
 }
