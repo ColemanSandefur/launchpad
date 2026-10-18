@@ -43,6 +43,7 @@ pub struct ServiceStatus {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum ServiceState {
+    Pending,
     Healthy,
     Unhealthy,
 }

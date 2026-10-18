@@ -3,12 +3,13 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+#[derive(Debug, Clone)]
 struct BufferState {
     deque: VecDeque<String>,
     total_pushed: usize, // Monotonically increasing counter of all lines ever added
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LogBuffer {
     state: Arc<Mutex<BufferState>>,
     max_capacity: usize,
