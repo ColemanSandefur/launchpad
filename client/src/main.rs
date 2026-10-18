@@ -71,9 +71,10 @@ async fn main() -> Result<()> {
                         (
                             name.clone(),
                             Service {
-                                program: service.command.clone(),
-                                args: service.args.clone(),
                                 env: service.resolve_env(),
+                                program: service.command,
+                                args: service.args,
+                                after: service.after,
                                 health_check: service.health_check.map(|h| h.into()),
                             },
                         )
@@ -159,5 +160,9 @@ async fn load_config(path: impl AsRef<Path>) -> Result<ProjectConfig> {
 
     let lua_val = lua.load(&file_content).eval()?;
 
-    Ok(lua.from_value(lua_val)?)
+    let config: ProjectConfig = lua.from_value(lua_val)?;
+
+    config.validate().context("Failed to pass validation")?;
+
+    Ok(config)
 }

@@ -12,9 +12,12 @@ use common::{
 use interprocess::local_socket::{
     GenericNamespaced, ListenerOptions, prelude::*, tokio::Stream, traits::tokio::Listener,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
-use crate::{instances::Instances, managed_service::ManagedService};
+use crate::{
+    instances::Instances,
+    managed_service::{DependencyList, ManagedService, ServiceState},
+};
 
 type Services = HashMap<String, ManagedService>;
 
@@ -121,14 +124,36 @@ async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn s
                     .await?;
             }
             ServerRequest::Up { structure, cwd } => {
+                let mut channels = HashMap::new();
+
+                for service_name in structure.services.keys() {
+                    channels.insert(service_name.clone(), watch::channel(ServiceState::Pending));
+                }
+
+                let cwd = Arc::new(cwd);
                 let mut services: Services = HashMap::new();
 
                 for (service_name, service) in structure.services {
-                    services.insert(service_name, ManagedService::start(service, &cwd).await?);
+                    let Some((health_tx, health_rx)) = channels.get(&service_name).cloned() else {
+                        continue;
+                    };
+
+                    // Collect the receivers for this service's 'after' list
+                    let dependencies: DependencyList = service
+                        .after
+                        .iter()
+                        .filter_map(|dep_name| channels.get(dep_name).map(|(_, rx)| rx.clone()))
+                        .collect::<Vec<_>>()
+                        .into();
+
+                    let mut managed_service = ManagedService::new(health_tx, health_rx);
+
+                    let _ = managed_service.start(service, dependencies, cwd.clone());
+
+                    services.insert(service_name.clone(), managed_service);
                 }
 
                 state.instances.lock().await.insert(id.clone(), services);
-
                 chan.send(&ServerResponse::Initialized).await?;
             }
             ServerRequest::Down => {

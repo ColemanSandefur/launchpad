@@ -13,6 +13,7 @@ pub struct Service {
     pub program: String,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
+    pub after: Vec<String>,
     pub health_check: Option<HealthCheck>,
 }
 

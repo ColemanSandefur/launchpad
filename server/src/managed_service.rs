@@ -1,4 +1,10 @@
-use std::{path::Path, process::Stdio, str::FromStr, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use common::{
@@ -6,11 +12,36 @@ use common::{
     structure::{HealthCheck, HealthCheckProbe, Service},
 };
 use reqwest::{Client, Url};
-use tokio::{sync::Mutex, task::JoinHandle};
+use tokio::{
+    sync::{Mutex, watch},
+    task::JoinHandle,
+};
 
 use crate::log::LogBuffer;
 
-#[derive(Debug, Clone, Copy)]
+pub struct DependencyList(pub Vec<watch::Receiver<ServiceState>>);
+
+impl DependencyList {
+    pub async fn wait_for_healthy(&mut self) {
+        for rx in self.0.iter_mut() {
+            if *rx.borrow() != ServiceState::Healthy {
+                while rx.changed().await.is_ok() {
+                    if *rx.borrow() == ServiceState::Healthy {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl From<Vec<watch::Receiver<ServiceState>>> for DependencyList {
+    fn from(value: Vec<watch::Receiver<ServiceState>>) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceState {
     Pending,
     Healthy,
@@ -18,18 +49,19 @@ pub enum ServiceState {
 }
 
 #[derive(Debug)]
-pub struct ManagedService {
-    child: tokio::process::Child, // Kept alive here so it doesn't drop/kill immediately
-    log_buffer: LogBuffer,
-    state: Arc<Mutex<ServiceState>>,
+pub struct Process {
+    child: tokio::process::Child,
     stdout_thread: JoinHandle<()>,
     stderr_thread: JoinHandle<()>,
-    health_check_thread: Option<JoinHandle<Result<()>>>,
+    health_check_thread: JoinHandle<Result<()>>,
 }
 
-impl ManagedService {
-    /// Start a new ManagedService.
-    pub async fn start(service: Service, cwd: impl AsRef<Path>) -> Result<Self> {
+impl Process {
+    pub async fn start(
+        service: Service,
+        cwd: impl AsRef<Path>,
+        health_tx: watch::Sender<ServiceState>,
+    ) -> Result<Self> {
         let mut child = service
             .to_command()
             .current_dir(cwd)
@@ -62,19 +94,11 @@ impl ManagedService {
             }
         });
 
-        let state = Arc::new(Mutex::new(ServiceState::Pending));
-        let health_check_thread = match service.health_check {
-            Some(health_check) => Some(tokio::spawn(Self::monitor_health(
-                health_check,
-                state.clone(),
-            ))),
-            None => None,
-        };
+        let health_check_thread =
+            tokio::spawn(Self::monitor_health(service.health_check, health_tx));
 
-        Ok(ManagedService {
+        Ok(Self {
             child,
-            log_buffer,
-            state,
             stdout_thread,
             stderr_thread,
             health_check_thread,
@@ -89,31 +113,29 @@ impl ManagedService {
         // Kill all the worker threads
         self.stdout_thread.abort();
         self.stderr_thread.abort();
-        self.health_check_thread.as_mut().map(|h| h.abort());
+        self.health_check_thread.abort();
     }
 
-    pub async fn status(&mut self) -> ServiceStatus {
-        let running = match self.child.try_wait() {
+    pub fn state(&mut self) -> bool {
+        match self.child.try_wait() {
             Ok(None) => true,
             Ok(Some(_)) => false,
             Err(_) => false,
-        };
-
-        let lock = self.state.lock().await;
-        let state = match *lock {
-            ServiceState::Pending => common::message::ServiceState::Pending,
-            ServiceState::Healthy => common::message::ServiceState::Healthy,
-            ServiceState::Unhealthy => common::message::ServiceState::Unhealthy,
-        };
-
-        ServiceStatus { running, state }
+        }
     }
 
-    pub fn log(&self) -> &LogBuffer {
-        &self.log_buffer
-    }
-
-    async fn monitor_health(check: HealthCheck, health: Arc<Mutex<ServiceState>>) -> Result<()> {
+    async fn monitor_health(
+        check: Option<HealthCheck>,
+        health_tx: watch::Sender<ServiceState>,
+    ) -> Result<()> {
+        let check = match check {
+            Some(check) => check,
+            None => {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let _ = health_tx.send(ServiceState::Healthy);
+                return Ok(());
+            }
+        };
         match check.probe {
             HealthCheckProbe::Http {
                 port,
@@ -139,8 +161,7 @@ impl ManagedService {
                             failures = 0;
 
                             if successes >= check.success_threshold {
-                                let mut lock = health.lock().await;
-                                *lock = ServiceState::Healthy;
+                                let _ = health_tx.send(ServiceState::Healthy);
                             }
                         }
                         _ => {
@@ -149,8 +170,7 @@ impl ManagedService {
                             successes = 0;
 
                             if failures >= check.failure_threshold {
-                                let mut lock = health.lock().await;
-                                *lock = ServiceState::Unhealthy;
+                                let _ = health_tx.send(ServiceState::Unhealthy);
                             }
                         }
                     }
@@ -168,9 +188,124 @@ impl ManagedService {
     }
 }
 
+impl Drop for Process {
+    fn drop(&mut self) {
+        println!("Dropping process...");
+        self.stop();
+    }
+}
+
+#[derive(Debug)]
+pub struct ManagedService {
+    child: Arc<Mutex<Option<Process>>>, // Kept alive here so it doesn't drop/kill immediately
+    log_buffer: LogBuffer,
+    health_tx: watch::Sender<ServiceState>,
+    health_rx: watch::Receiver<ServiceState>,
+    startup_handle: Option<JoinHandle<Result<()>>>,
+}
+
+impl ManagedService {
+    pub fn new(
+        health_tx: watch::Sender<ServiceState>,
+        health_rx: watch::Receiver<ServiceState>,
+    ) -> Self {
+        Self {
+            child: Arc::new(Mutex::new(None)),
+            log_buffer: LogBuffer::new(1000),
+            health_tx,
+            health_rx,
+            startup_handle: None,
+        }
+    }
+
+    /// Start a new ManagedService.
+    pub fn start(
+        &mut self,
+        service: Service,
+        mut dependencies: DependencyList,
+        cwd: Arc<PathBuf>,
+    ) -> Result<()> {
+        let process_ref = self.child.clone();
+        let health_tx = self.health_tx.clone();
+
+        let handle = tokio::spawn(async move {
+            dependencies.wait_for_healthy().await;
+            let process = Process::start(service, &*cwd, health_tx).await;
+
+            match process {
+                Ok(p) => {
+                    (*process_ref.lock().await) = Some(p);
+                    Ok(())
+                }
+                Err(e) => {
+                    let e = e.context("Failed to spawn process");
+
+                    eprintln!("Failed to start service: {e:#?}");
+
+                    Err(e)
+                }
+            }
+        });
+
+        self.startup_handle = Some(handle);
+
+        Ok(())
+    }
+
+    /// Stops all related tasks for this ManagedService.
+    pub async fn stop(&mut self) {
+        self.startup_handle.as_mut().map(|h| h.abort());
+
+        let mut lock = self.child.lock().await;
+
+        lock.as_mut().map(|e| e.stop());
+        *lock = None;
+    }
+
+    pub async fn status(&mut self) -> ServiceStatus {
+        let running = self
+            .child
+            .lock()
+            .await
+            .as_mut()
+            .map(|c| c.state())
+            .unwrap_or(false);
+
+        let lock = self.health_rx.borrow();
+        let state = match *lock {
+            ServiceState::Pending => common::message::ServiceState::Pending,
+            ServiceState::Healthy => common::message::ServiceState::Healthy,
+            ServiceState::Unhealthy => common::message::ServiceState::Unhealthy,
+        };
+
+        ServiceStatus { running, state }
+    }
+
+    pub fn log(&self) -> &LogBuffer {
+        &self.log_buffer
+    }
+
+    pub async fn wait_for_healthy(&mut self) -> Result<()> {
+        let rx = &mut self.health_rx;
+
+        // Check if it's already healthy
+        if *rx.borrow() == ServiceState::Healthy {
+            return Ok(());
+        }
+
+        // Otherwise, wait for a change until it's healthy
+        while rx.changed().await.is_ok() {
+            if *rx.borrow() == ServiceState::Healthy {
+                return Ok(());
+            }
+        }
+
+        anyhow::bail!("Service failed to become healthy");
+    }
+}
+
 impl Drop for ManagedService {
     fn drop(&mut self) {
-        println!("Dropping service...");
-        self.stop();
+        self.startup_handle.as_mut().map(|h| h.abort());
     }
 }

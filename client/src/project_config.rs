@@ -1,10 +1,84 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProjectConfig {
     pub services: HashMap<String, ServiceConfig>,
+}
+
+impl ProjectConfig {
+    pub fn validate(&self) -> Result<()> {
+        let service_names: HashSet<&String> = self.services.keys().collect();
+
+        // 1. Check that all dependencies exist
+        for (name, service) in &self.services {
+            for dep in &service.after {
+                if !service_names.contains(dep) {
+                    bail!(
+                        "Configuration error: Service '{}' depends on '{}', but '{}' does not exist in the configuration.",
+                        name,
+                        dep,
+                        dep
+                    );
+                }
+            }
+        }
+
+        // 2. Check for circular dependencies (DAG validation)
+        self.check_for_cycles()?;
+
+        Ok(())
+    }
+
+    fn check_for_cycles(&self) -> Result<()> {
+        #[derive(Clone, Copy)]
+        enum Visited {
+            /// Unvisited
+            NotVisited,
+            /// Current recursion stack
+            Visiting,
+            /// Fully Visited
+            Visited,
+        }
+
+        let mut visited: HashMap<&str, Visited> = HashMap::new();
+
+        fn dfs<'a>(
+            name: &'a str,
+            services: &'a HashMap<String, ServiceConfig>,
+            visited: &mut HashMap<&'a str, Visited>,
+        ) -> Result<()> {
+            match visited.get(name).copied().unwrap_or(Visited::NotVisited) {
+                Visited::Visiting => {
+                    bail!("Circular dependency detected involving service: '{}'", name)
+                }
+                Visited::Visited => return Ok(()), // Already fully checked
+                Visited::NotVisited => {}
+            }
+
+            visited.insert(name, Visited::Visiting);
+
+            if let Some(service) = services.get(name) {
+                for dep in &service.after {
+                    dfs(dep, services, visited)?;
+                }
+            }
+
+            visited.insert(name, Visited::Visited);
+            Ok(())
+        }
+
+        for name in self.services.keys() {
+            dfs(name, &self.services, &mut visited)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -19,6 +93,9 @@ pub struct ServiceConfig {
 
     #[serde(default)]
     pub env: HashMap<String, String>,
+
+    #[serde(default)]
+    pub after: Vec<String>,
 
     #[serde(default)]
     pub health_check: Option<HealthCheck>,
