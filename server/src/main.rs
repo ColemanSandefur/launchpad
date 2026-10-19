@@ -2,7 +2,7 @@ pub mod instances;
 pub mod log;
 pub mod managed_service;
 
-use std::{collections::HashMap, io, sync::Arc};
+use std::{collections::HashMap, io, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use common::{
@@ -12,7 +12,10 @@ use common::{
 use interprocess::local_socket::{
     GenericNamespaced, ListenerOptions, prelude::*, tokio::Stream, traits::tokio::Listener,
 };
-use tokio::sync::{Mutex, watch};
+use tokio::{
+    runtime::Handle,
+    sync::{Mutex, watch},
+};
 
 use crate::{
     instances::Instances,
@@ -61,6 +64,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state: Arc<AppState> = Arc::new(AppState {
         instances: Mutex::new(Instances::new()),
+    });
+
+    tokio::spawn(async {
+        let metrics = Handle::current().metrics();
+
+        loop {
+            println!("{} threads active", metrics.num_alive_tasks());
+
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
     });
 
     loop {

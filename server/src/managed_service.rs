@@ -13,6 +13,7 @@ use common::{
 };
 use reqwest::{Client, Url};
 use tokio::{
+    process::Child,
     sync::{Mutex, watch},
     task::JoinHandle,
 };
@@ -24,9 +25,9 @@ pub struct DependencyList(pub Vec<watch::Receiver<ServiceState>>);
 impl DependencyList {
     pub async fn wait_for_healthy(&mut self) {
         for rx in self.0.iter_mut() {
-            if *rx.borrow() != ServiceState::Healthy {
+            if !rx.borrow().is_available() {
                 while rx.changed().await.is_ok() {
-                    if *rx.borrow() == ServiceState::Healthy {
+                    if rx.borrow().is_available() {
                         break;
                     }
                 }
@@ -43,17 +44,41 @@ impl From<Vec<watch::Receiver<ServiceState>>> for DependencyList {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceState {
+    /// Service has not yet started or is waiting for dependencies.
     Pending,
+    /// Process has been spawned, but health checks have not yet passed.
+    Starting,
+    /// Process is running and health checks are fully passing.
     Healthy,
+    /// Process is running, but health checks are failing.
     Unhealthy,
+    /// Service is intentionally shutting down.
+    Stopping,
+    /// Service process has exited successfully or was stopped.
+    Stopped,
+    /// Service process crashed or failed to start.
+    Failed,
+}
+
+impl ServiceState {
+    /// Returns true if the service is in a usable/ready state for dependents.
+    pub fn is_available(&self) -> bool {
+        matches!(self, ServiceState::Healthy)
+    }
+
+    pub fn is_dead(&self) -> bool {
+        matches!(self, ServiceState::Stopped | ServiceState::Failed)
+    }
 }
 
 #[derive(Debug)]
 pub struct Process {
-    child: tokio::process::Child,
+    child: Arc<Mutex<Child>>,
     stdout_thread: JoinHandle<()>,
     stderr_thread: JoinHandle<()>,
     health_check_thread: JoinHandle<Result<()>>,
+    exit_monitor_thread: JoinHandle<()>,
+    health_tx: watch::Sender<ServiceState>,
 }
 
 impl Process {
@@ -61,6 +86,7 @@ impl Process {
         service: Service,
         cwd: impl AsRef<Path>,
         health_tx: watch::Sender<ServiceState>,
+        health_rx: watch::Receiver<ServiceState>,
     ) -> Result<Self> {
         let mut child = service
             .to_command()
@@ -74,65 +100,83 @@ impl Process {
         let stdout = child.stdout.take().context("Failed to take stdout")?;
         let stderr = child.stderr.take().context("Failed to take stderr")?;
 
+        let child = Arc::new(Mutex::new(child));
+
         let log_buffer = LogBuffer::new(1000);
 
-        let buffer_clone = log_buffer.clone();
-        let stdout_thread = tokio::spawn(async move {
-            let reader = tokio::io::BufReader::new(stdout);
-            let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
-            while let Ok(Some(line)) = lines.next_line().await {
-                buffer_clone.push(line).await;
-            }
-        });
+        let stdout_thread = tokio::spawn(Self::monitor_logs(
+            stdout,
+            log_buffer.clone(),
+            health_rx.clone(),
+        ));
 
-        let buffer_clone = log_buffer.clone();
-        let stderr_thread = tokio::spawn(async move {
-            let reader = tokio::io::BufReader::new(stderr);
-            let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
-            while let Ok(Some(line)) = lines.next_line().await {
-                buffer_clone.push(line).await;
-            }
-        });
+        let stderr_thread = tokio::spawn(Self::monitor_logs(
+            stderr,
+            log_buffer.clone(),
+            health_rx.clone(),
+        ));
 
-        let health_check_thread =
-            tokio::spawn(Self::monitor_health(service.health_check, health_tx));
+        let health_check_thread = tokio::spawn(Self::monitor_health(
+            service.health_check,
+            health_tx.clone(),
+            health_rx.clone(),
+        ));
+
+        let exit_monitor_thread =
+            tokio::spawn(Self::monitor_exit(child.clone(), health_tx.clone()));
 
         Ok(Self {
             child,
             stdout_thread,
             stderr_thread,
             health_check_thread,
+            exit_monitor_thread,
+            health_tx,
         })
     }
 
     /// Stops all related tasks for this ManagedService.
-    pub fn stop(&mut self) {
+    pub async fn stop(&mut self) {
+        let _ = self.health_tx.send(ServiceState::Stopping);
+
         // Kill the child process
-        let _ = self.child.start_kill();
+        let _ = self.child.lock().await.start_kill();
 
         // Kill all the worker threads
         self.stdout_thread.abort();
         self.stderr_thread.abort();
         self.health_check_thread.abort();
+        self.exit_monitor_thread.abort();
     }
 
-    pub fn state(&mut self) -> bool {
-        match self.child.try_wait() {
-            Ok(None) => true,
-            Ok(Some(_)) => false,
-            Err(_) => false,
+    async fn monitor_logs<R>(inner: R, buffer: LogBuffer, health_rx: watch::Receiver<ServiceState>)
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        let reader = tokio::io::BufReader::new(inner);
+        let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
+
+        while !health_rx.borrow().is_dead()
+            && let Ok(Some(line)) = lines.next_line().await
+        {
+            buffer.push(line).await;
         }
+
+        println!("Leaving monitor_logs");
     }
 
     async fn monitor_health(
         check: Option<HealthCheck>,
         health_tx: watch::Sender<ServiceState>,
+        health_rx: watch::Receiver<ServiceState>,
     ) -> Result<()> {
         let check = match check {
             Some(check) => check,
             None => {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                let _ = health_tx.send(ServiceState::Healthy);
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                if !health_rx.borrow().is_dead() {
+                    let _ = health_tx.send(ServiceState::Healthy);
+                }
                 return Ok(());
             }
         };
@@ -152,7 +196,7 @@ impl Process {
 
                 tokio::time::sleep(check.initial_delay).await;
 
-                loop {
+                while !health_rx.borrow().is_dead() {
                     let res = client.get(url.clone()).send().await;
 
                     match res {
@@ -160,7 +204,8 @@ impl Process {
                             successes += 1;
                             failures = 0;
 
-                            if successes >= check.success_threshold {
+                            if successes >= check.success_threshold && !health_rx.borrow().is_dead()
+                            {
                                 let _ = health_tx.send(ServiceState::Healthy);
                             }
                         }
@@ -169,7 +214,8 @@ impl Process {
                             failures += 1;
                             successes = 0;
 
-                            if failures >= check.failure_threshold {
+                            if failures >= check.failure_threshold && !health_rx.borrow().is_dead()
+                            {
                                 let _ = health_tx.send(ServiceState::Unhealthy);
                             }
                         }
@@ -183,15 +229,54 @@ impl Process {
 
                     tokio::time::sleep(check.period).await;
                 }
+
+                println!("Leaving monitor_health");
+
+                Ok(())
             }
         }
+    }
+
+    async fn monitor_exit(child: Arc<Mutex<Child>>, health_tx: watch::Sender<ServiceState>) {
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            let mut guard = child.lock().await;
+            match guard.try_wait() {
+                Ok(Some(status)) => {
+                    drop(guard); // Release lock immediately
+                    let new_state = if status.success() {
+                        ServiceState::Stopped
+                    } else {
+                        ServiceState::Failed
+                    };
+                    let _ = health_tx.send(new_state);
+                    break;
+                }
+                Ok(None) => {
+                    // Still running
+                }
+                Err(_) => {
+                    drop(guard);
+                    let _ = health_tx.send(ServiceState::Failed);
+                    break;
+                }
+            }
+        }
+
+        println!("Leaving monitor_exit");
     }
 }
 
 impl Drop for Process {
     fn drop(&mut self) {
         println!("Dropping process...");
-        self.stop();
+
+        // Kill all the worker threads
+        self.stdout_thread.abort();
+        self.stderr_thread.abort();
+        self.health_check_thread.abort();
+        self.exit_monitor_thread.abort();
     }
 }
 
@@ -227,10 +312,13 @@ impl ManagedService {
     ) -> Result<()> {
         let process_ref = self.child.clone();
         let health_tx = self.health_tx.clone();
+        let health_rx = self.health_rx.clone();
+
+        let _ = health_tx.send(ServiceState::Starting);
 
         let handle = tokio::spawn(async move {
             dependencies.wait_for_healthy().await;
-            let process = Process::start(service, &*cwd, health_tx).await;
+            let process = Process::start(service, &*cwd, health_tx, health_rx).await;
 
             match process {
                 Ok(p) => {
@@ -263,22 +351,18 @@ impl ManagedService {
     }
 
     pub async fn status(&mut self) -> ServiceStatus {
-        let running = self
-            .child
-            .lock()
-            .await
-            .as_mut()
-            .map(|c| c.state())
-            .unwrap_or(false);
-
         let lock = self.health_rx.borrow();
         let state = match *lock {
             ServiceState::Pending => common::message::ServiceState::Pending,
+            ServiceState::Starting => common::message::ServiceState::Starting,
             ServiceState::Healthy => common::message::ServiceState::Healthy,
             ServiceState::Unhealthy => common::message::ServiceState::Unhealthy,
+            ServiceState::Stopping => common::message::ServiceState::Stopping,
+            ServiceState::Stopped => common::message::ServiceState::Stopped,
+            ServiceState::Failed => common::message::ServiceState::Failed,
         };
 
-        ServiceStatus { running, state }
+        ServiceStatus { state }
     }
 
     pub fn log(&self) -> &LogBuffer {
@@ -289,13 +373,13 @@ impl ManagedService {
         let rx = &mut self.health_rx;
 
         // Check if it's already healthy
-        if *rx.borrow() == ServiceState::Healthy {
+        if rx.borrow().is_available() {
             return Ok(());
         }
 
         // Otherwise, wait for a change until it's healthy
         while rx.changed().await.is_ok() {
-            if *rx.borrow() == ServiceState::Healthy {
+            if rx.borrow().is_available() {
                 return Ok(());
             }
         }
