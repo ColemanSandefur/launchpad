@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::structure::Structure;
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum ServerRequest {
     Initial {
         id: String,
@@ -21,26 +21,32 @@ pub enum ServerRequest {
     },
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum ServerResponse {
     Initialized,
-    StatusResponse {
-        services: HashMap<String, ServiceStatus>,
-    },
-    ServiceLogResponse {
-        service_name: String,
-        lines: Vec<String>,
-        next_idx: usize,
-        dropped_history: bool,
-    },
+    StatusResponse(StatusResponse),
+    ServiceLogResponse(ServiceLogResponse),
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StatusResponse {
+    pub services: HashMap<String, ServiceStatus>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ServiceLogResponse {
+    pub service_name: String,
+    pub lines: Vec<String>,
+    pub next_idx: usize,
+    pub dropped_history: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ServiceStatus {
     pub state: ServiceState,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum ServiceState {
     /// Service has not yet started or is waiting for dependencies.
     Pending,

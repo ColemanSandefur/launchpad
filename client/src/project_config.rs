@@ -1,10 +1,14 @@
 use std::{
     collections::{HashMap, HashSet},
+    path::Path,
     time::Duration,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use common::structure::{Service, Structure};
+use mlua::{Lua, LuaSerdeExt};
 use serde::{Deserialize, Serialize};
+use tokio::fs;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProjectConfig {
@@ -12,6 +16,22 @@ pub struct ProjectConfig {
 }
 
 impl ProjectConfig {
+    pub async fn load(path: impl AsRef<Path>) -> Result<ProjectConfig> {
+        let lua = Lua::new();
+
+        let file_content = fs::read_to_string(path)
+            .await
+            .context("Failed to load config.lua")?;
+
+        let lua_val = lua.load(&file_content).eval()?;
+
+        let config: ProjectConfig = lua.from_value(lua_val)?;
+
+        config.validate().context("Failed to pass validation")?;
+
+        Ok(config)
+    }
+
     pub fn validate(&self) -> Result<()> {
         let service_names: HashSet<&String> = self.services.keys().collect();
 
@@ -81,6 +101,18 @@ impl ProjectConfig {
     }
 }
 
+impl Into<Structure> for ProjectConfig {
+    fn into(self) -> Structure {
+        Structure {
+            services: self
+                .services
+                .into_iter()
+                .map(|(name, service)| (name.clone(), service.into()))
+                .collect(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ServiceConfig {
     pub command: String,
@@ -122,6 +154,18 @@ impl ServiceConfig {
         }
 
         env
+    }
+}
+
+impl Into<Service> for ServiceConfig {
+    fn into(self) -> Service {
+        Service {
+            env: self.resolve_env(),
+            program: self.command,
+            args: self.args,
+            after: self.after,
+            health_check: self.health_check.map(|h| h.into()),
+        }
     }
 }
 

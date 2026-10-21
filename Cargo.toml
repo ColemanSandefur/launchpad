@@ -9,6 +9,7 @@ edition = "2024"
 anyhow = "1"
 base64 = "0.23"
 clap = { version = "4.6.7", features = ["derive"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 dotenvy = "0.15.7"
 futures = { version = "0.3", features = [] }
 interprocess = { version = "2.4.6", features = ["tokio"] }
@@ -19,6 +20,7 @@ mlua = { version = "0.12", features = [
   "error-send",
 ] }
 postcard = { version = "1", features = ["use-std", "alloc"] }
+ratatui = "0.30.2"
 reqwest = "0.13.5"
 serde = { version = "1", features = ["derive"] }
 thiserror = { version = "2" }

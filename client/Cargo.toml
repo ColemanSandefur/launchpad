@@ -8,9 +8,14 @@ anyhow = { workspace = true }
 base64 = { workspace = true }
 clap = { workspace = true }
 common = { path = "../common" }
+crossterm = { workspace = true }
 dotenvy = { workspace = true }
+futures = { workspace = true }
 interprocess = { workspace = true }
 mlua = { workspace = true }
 postcard = { workspace = true }
+ratatui = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
+thiserror = { workspace = true }

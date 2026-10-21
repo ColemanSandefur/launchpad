@@ -18,6 +18,16 @@ pub enum SendError {
     Io(#[from] core::io::Error),
 }
 
+#[derive(Error, Debug)]
+pub enum ReceiveError {
+    #[error("A postcard error occurred: {0}")]
+    Postcard(#[from] postcard::Error),
+
+    #[error("An IO error occurred: {0}")]
+    Io(#[from] core::io::Error),
+}
+
+#[derive(Debug)]
 pub struct Channel {
     channel: Framed<Stream, LengthDelimitedCodec>,
 }
@@ -40,7 +50,7 @@ impl Channel {
         Ok(())
     }
 
-    pub async fn receive<T>(&mut self) -> Option<Result<T, SendError>>
+    pub async fn receive<T>(&mut self) -> Option<Result<T, ReceiveError>>
     where
         T: DeserializeOwned,
     {

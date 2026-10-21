@@ -84,6 +84,7 @@ pub struct Process {
 impl Process {
     pub async fn start(
         service: Service,
+        log_buffer: LogBuffer,
         cwd: impl AsRef<Path>,
         health_tx: watch::Sender<ServiceState>,
         health_rx: watch::Receiver<ServiceState>,
@@ -101,8 +102,6 @@ impl Process {
         let stderr = child.stderr.take().context("Failed to take stderr")?;
 
         let child = Arc::new(Mutex::new(child));
-
-        let log_buffer = LogBuffer::new(1000);
 
         let stdout_thread = tokio::spawn(Self::monitor_logs(
             stdout,
@@ -313,12 +312,13 @@ impl ManagedService {
         let process_ref = self.child.clone();
         let health_tx = self.health_tx.clone();
         let health_rx = self.health_rx.clone();
+        let log_buffer = self.log_buffer.clone();
 
         let _ = health_tx.send(ServiceState::Starting);
 
         let handle = tokio::spawn(async move {
             dependencies.wait_for_healthy().await;
-            let process = Process::start(service, &*cwd, health_tx, health_rx).await;
+            let process = Process::start(service, log_buffer, &*cwd, health_tx, health_rx).await;
 
             match process {
                 Ok(p) => {

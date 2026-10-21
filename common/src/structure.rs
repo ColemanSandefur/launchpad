@@ -3,12 +3,12 @@ use std::{collections::HashMap, time::Duration};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Structure {
     pub services: HashMap<String, Service>,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Service {
     pub program: String,
     pub args: Vec<String>,
@@ -33,7 +33,7 @@ impl Into<Command> for Service {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct HealthCheck {
     /// The specific probe to use
     pub probe: HealthCheckProbe,
@@ -57,7 +57,7 @@ pub struct HealthCheck {
     pub timeout: Option<Duration>,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum HealthCheckProbe {
     Http {
         /// The port to connect to.

@@ -1,26 +1,13 @@
+mod commands;
 pub mod project_config;
+pub mod ui;
 
-use std::{
-    os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
-};
+use std::{os::unix::ffi::OsStrExt, path::PathBuf};
 
-use anyhow::{Context, Result};
-use base64::prelude::*;
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use common::{
-    Channel,
-    message::{ServerRequest, ServerResponse},
-    structure::{Service, Structure},
-};
-use interprocess::local_socket::{
-    GenericNamespaced,
-    tokio::{Stream, prelude::*},
-};
-use mlua::{Lua, LuaSerdeExt};
-use tokio::fs;
 
-use crate::project_config::ProjectConfig;
+use crate::{commands::Api, project_config::ProjectConfig};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -35,7 +22,11 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Start up all the services
-    Up,
+    Up {
+        /// Start the services without attaching to the TUI
+        #[arg(short, long)]
+        detach: bool,
+    },
     /// Stop all the services
     Down,
     /// Get the status of the services
@@ -57,66 +48,35 @@ async fn main() -> Result<()> {
 
     let config_path = args.config.canonicalize()?;
 
-    let config = load_config(&config_path).await?;
+    let config = ProjectConfig::load(&config_path).await?;
 
-    let mut chan = init_connection(config_path.as_os_str().as_bytes()).await?;
+    let mut api = Api::connect(config_path.as_os_str().as_bytes()).await?;
 
     match args.command {
-        Commands::Up => {
-            let structure = Structure {
-                services: config
-                    .services
-                    .into_iter()
-                    .map(|(name, service)| {
-                        (
-                            name.clone(),
-                            Service {
-                                env: service.resolve_env(),
-                                program: service.command,
-                                args: service.args,
-                                after: service.after,
-                                health_check: service.health_check.map(|h| h.into()),
-                            },
-                        )
-                    })
-                    .collect(),
-            };
-            chan.send(&ServerRequest::Up {
-                structure,
-                cwd: current_dir,
-            })
-            .await
-            .unwrap();
-            chan.receive::<ServerResponse>().await.unwrap().unwrap();
+        Commands::Up { detach } => {
+            let is_running = !api.get_status().await?.services.is_empty();
+
+            match is_running {
+                true => api.up(config.into(), current_dir).await?,
+                false => println!(
+                    "The service was already running.\nIf you want to publish new changes, take the services down and back up."
+                ),
+            }
+
+            if !detach {
+                crate::ui::run(&mut api).await?;
+            }
         }
         Commands::Down => {
-            chan.send(&ServerRequest::Down).await.unwrap();
-            chan.receive::<ServerResponse>().await.unwrap().unwrap();
+            api.down().await?;
         }
         Commands::Status => {
-            chan.send(&ServerRequest::Status).await?;
-
-            let ServerResponse::StatusResponse { services } =
-                chan.receive::<ServerResponse>().await.unwrap().unwrap()
-            else {
-                panic!()
-            };
+            let services = api.get_status().await?.services;
 
             println!("Status: {:#?}", services);
         }
         Commands::Logs { name, start_idx } => {
-            chan.send(&ServerRequest::ServiceLog {
-                service_name: name,
-                start_idx,
-            })
-            .await
-            .unwrap();
-
-            let ServerResponse::ServiceLogResponse { lines, .. } =
-                chan.receive::<ServerResponse>().await.unwrap().unwrap()
-            else {
-                panic!()
-            };
+            let lines = api.logs(name, start_idx).await?.lines;
 
             println!("{}", lines.join("\n"));
         }
@@ -127,42 +87,4 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-async fn init_connection(id: impl AsRef<[u8]>) -> Result<Channel> {
-    let printname = "example.sock";
-    let name = printname.to_ns_name::<GenericNamespaced>()?;
-
-    let conn = Stream::connect(name).await?;
-
-    let mut chan = Channel::from_stream(conn);
-
-    let message = ServerRequest::Initial {
-        id: BASE64_STANDARD.encode(id),
-    };
-
-    chan.send(&message).await?;
-
-    let ServerResponse::Initialized = chan.receive::<ServerResponse>().await.unwrap().unwrap()
-    else {
-        anyhow::bail!("Server unreachable")
-    };
-
-    Ok(chan)
-}
-
-async fn load_config(path: impl AsRef<Path>) -> Result<ProjectConfig> {
-    let lua = Lua::new();
-
-    let file_content = fs::read_to_string(path)
-        .await
-        .context("Failed to load config.lua")?;
-
-    let lua_val = lua.load(&file_content).eval()?;
-
-    let config: ProjectConfig = lua.from_value(lua_val)?;
-
-    config.validate().context("Failed to pass validation")?;
-
-    Ok(config)
 }

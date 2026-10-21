@@ -7,7 +7,7 @@ use std::{collections::HashMap, io, sync::Arc, time::Duration};
 use anyhow::Result;
 use common::{
     Channel,
-    message::{ServerRequest, ServerResponse},
+    message::{ServerRequest, ServerResponse, ServiceLogResponse, StatusResponse},
 };
 use interprocess::local_socket::{
     GenericNamespaced, ListenerOptions, prelude::*, tokio::Stream, traits::tokio::Listener,
@@ -117,9 +117,9 @@ async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn s
             ServerRequest::Initial { .. } => {}
             ServerRequest::Status => {
                 let Some(services) = state.get_instance(&id).await else {
-                    chan.send(&ServerResponse::StatusResponse {
+                    chan.send(&ServerResponse::StatusResponse(StatusResponse {
                         services: Default::default(),
-                    })
+                    }))
                     .await
                     .unwrap();
                     continue;
@@ -133,8 +133,10 @@ async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn s
                     statuses.insert(name.clone(), service.status().await);
                 }
 
-                chan.send(&ServerResponse::StatusResponse { services: statuses })
-                    .await?;
+                chan.send(&ServerResponse::StatusResponse(StatusResponse {
+                    services: statuses,
+                }))
+                .await?;
             }
             ServerRequest::Up { structure, cwd } => {
                 let mut channels = HashMap::new();
@@ -179,12 +181,12 @@ async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn s
                 start_idx,
             } => {
                 let Some(services_mutex) = state.get_instance(&id).await else {
-                    chan.send(&ServerResponse::ServiceLogResponse {
+                    chan.send(&ServerResponse::ServiceLogResponse(ServiceLogResponse {
                         service_name,
                         lines: vec![],
                         next_idx: 0,
                         dropped_history: false,
-                    })
+                    }))
                     .await
                     .unwrap();
                     continue;
@@ -196,22 +198,22 @@ async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn s
                     Some(service) => {
                         let result = service.log().get_since(start_idx.unwrap_or_default()).await;
 
-                        chan.send(&ServerResponse::ServiceLogResponse {
+                        chan.send(&ServerResponse::ServiceLogResponse(ServiceLogResponse {
                             service_name,
                             lines: result.lines,
                             next_idx: result.next_idx,
                             dropped_history: result.dropped_history,
-                        })
+                        }))
                         .await
                         .unwrap();
                     }
                     None => {
-                        chan.send(&ServerResponse::ServiceLogResponse {
+                        chan.send(&ServerResponse::ServiceLogResponse(ServiceLogResponse {
                             service_name,
                             lines: vec![],
                             next_idx: 0,
                             dropped_history: false,
-                        })
+                        }))
                         .await
                         .unwrap();
                     }
