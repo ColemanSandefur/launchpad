@@ -1,14 +1,6 @@
-use std::{io, time::Duration};
-
-use crossterm::{
-    event::{Event, EventStream, KeyCode, KeyModifiers},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-use futures::StreamExt;
+use crossterm::event::{Event, KeyCode};
 use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
+    Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
@@ -16,116 +8,14 @@ use ratatui::{
 
 use crate::commands::Api;
 
-pub async fn run(api: &mut Api) -> anyhow::Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let mut app = TuiApp::new(api).await;
-
-    let result = run_tui_loop(&mut terminal, &mut app, api).await;
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    result
-}
-
-async fn run_tui_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut TuiApp,
-    api: &mut Api,
-) -> anyhow::Result<()> {
-    let mut reader = EventStream::new();
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
-
-    loop {
-        terminal.draw(|f| app.render(f))?;
-
-        tokio::select! {
-            // Handle terminal input events
-            Some(Ok(event)) = reader.next() => {
-                if let Event::Key(key) = event {
-                    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                        break;
-                    }
-                    match key.code {
-                        KeyCode::Char('q') => break,
-                        _ => {}
-                    };
-                }
-
-                app.key_event(api, &event).await;
-            }
-
-            // Periodic background ticker to auto-refresh status & logs
-            _ = interval.tick() => {
-                app.update(api).await;
-            }
-        }
-
-        if app.should_quit {
-            break;
-        }
-    }
-
-    Ok(())
-}
-
-struct TuiApp {
-    state: TuiState,
-    should_quit: bool,
-}
-
-impl TuiApp {
-    async fn new(api: &mut Api) -> Self {
-        Self {
-            state: TuiState::Home(TuiListState::new(api).await),
-            should_quit: false,
-        }
-    }
-
-    fn render(&mut self, f: &mut Frame<'_>) {
-        match &mut self.state {
-            TuiState::Home(api_list_state) => {
-                api_list_state.render(f);
-            }
-        }
-    }
-
-    async fn key_event(&mut self, api: &mut Api, event: &Event) {
-        match &mut self.state {
-            TuiState::Home(api_list_state) => {
-                api_list_state.key_event(api, &event).await;
-            }
-        }
-    }
-
-    async fn update(&mut self, api: &mut Api) {
-        match &mut self.state {
-            TuiState::Home(api_list_state) => {
-                api_list_state.update(api).await;
-            }
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum TuiState {
-    Home(TuiListState),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TuiListState {
+pub struct HomeState {
     services: Vec<(String, String)>, // Name and Status
     list_state: ListState,           // Tracks selected service index
     selected_logs: Vec<String>,      // Logs for the currently selected service
 }
 
-impl TuiListState {
+impl HomeState {
     pub async fn new(api: &mut Api) -> Self {
         let mut state = Self {
             services: vec![],
@@ -138,7 +28,7 @@ impl TuiListState {
         state
     }
 
-    fn render(&mut self, f: &mut Frame<'_>) {
+    pub fn render(&mut self, f: &mut Frame<'_>) {
         // Split screen vertically: Top half for services list, Bottom half for logs
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -199,7 +89,7 @@ impl TuiListState {
         f.render_widget(footer, chunks[2]);
     }
 
-    async fn key_event(&mut self, api: &mut Api, event: &Event) {
+    pub async fn key_event(&mut self, api: &mut Api, event: &Event) {
         // Handle terminal input events
         if let Event::Key(key) = event {
             match key.code {
@@ -219,7 +109,8 @@ impl TuiListState {
             }
         }
     }
-    async fn update(&mut self, api: &mut Api) {
+
+    pub async fn update(&mut self, api: &mut Api) {
         self.fetch_status(api).await;
         self.fetch_logs(api).await;
     }
