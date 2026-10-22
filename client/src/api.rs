@@ -52,6 +52,26 @@ impl Api {
         Self::connect(self.id.clone()).await
     }
 
+    pub async fn ping(&mut self) -> Result<(), ApiError> {
+        self.channel.send(&ServerRequest::Ping).await?;
+
+        let response = match self.channel.receive::<ServerResponse>().await {
+            Some(val) => val?,
+            None => {
+                return Err(ApiError::ConnectionClosed(anyhow::anyhow!(
+                    "Connection closed"
+                )));
+            }
+        };
+
+        match response {
+            ServerResponse::Acknowledge => Ok(()),
+            x => Err(ApiError::InvalidResponse(anyhow::anyhow!(
+                "Invalid response received: {x:?}"
+            ))),
+        }
+    }
+
     pub async fn get_status(&mut self) -> Result<StatusResponse, ApiError> {
         self.channel.send(&ServerRequest::Status).await?;
 
@@ -94,7 +114,7 @@ impl Api {
         };
 
         match response {
-            ServerResponse::Initialized => Ok(()),
+            ServerResponse::Acknowledge => Ok(()),
             x => Err(ApiError::InvalidResponse(anyhow::anyhow!(
                 "Invalid response received: {x:?}"
             ))),
@@ -114,7 +134,7 @@ impl Api {
         };
 
         match response {
-            ServerResponse::Initialized => Ok(()),
+            ServerResponse::Acknowledge => Ok(()),
             x => Err(ApiError::InvalidResponse(anyhow::anyhow!(
                 "Invalid response received: {x:?}"
             ))),

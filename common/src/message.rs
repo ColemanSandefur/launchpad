@@ -19,11 +19,13 @@ pub enum ServerRequest {
         service_name: String,
         start_idx: Option<usize>,
     },
+    Ping,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum ServerResponse {
     Initialized,
+    Acknowledge,
     StatusResponse(StatusResponse),
     ServiceLogResponse(ServiceLogResponse),
 }

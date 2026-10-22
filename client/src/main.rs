@@ -1,5 +1,6 @@
 mod api;
 mod channel_id;
+mod connection_manager;
 pub mod project_config;
 pub mod ui;
 
@@ -8,7 +9,7 @@ use std::{os::unix::ffi::OsStrExt, path::PathBuf};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::{api::Api, project_config::ProjectConfig};
+use crate::{api::Api, channel_id::ChannelId, project_config::ProjectConfig};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -51,7 +52,8 @@ async fn main() -> Result<()> {
 
     let config = ProjectConfig::load(&config_path).await?;
 
-    let mut api = Api::connect(config_path.as_os_str().as_bytes()).await?;
+    let id = ChannelId::encode(config_path.as_os_str().as_bytes());
+    let mut api = Api::connect(id.clone()).await?;
 
     match args.command {
         Commands::Up { detach } => {
@@ -65,7 +67,7 @@ async fn main() -> Result<()> {
             }
 
             if !detach {
-                crate::ui::run(&mut api).await?;
+                crate::ui::run(id).await?;
             }
         }
         Commands::Down => {

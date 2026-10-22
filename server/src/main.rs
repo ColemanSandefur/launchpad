@@ -113,74 +113,116 @@ async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn s
         };
 
         // 7. Handle the message logic
-        match message {
-            ServerRequest::Initial { .. } => {}
-            ServerRequest::Status => {
-                let Some(services) = state.get_instance(&id).await else {
-                    chan.send(&ServerResponse::StatusResponse(StatusResponse {
-                        services: Default::default(),
-                    }))
-                    .await
-                    .unwrap();
+        handle_event(&state, &mut chan, &id, message).await?;
+    }
+
+    Ok(())
+}
+
+async fn handle_event(
+    state: &AppState,
+    chan: &mut Channel,
+    id: &String,
+    message: ServerRequest,
+) -> anyhow::Result<()> {
+    match message {
+        ServerRequest::Initial { .. } => {}
+        ServerRequest::Ping => {
+            chan.send(&ServerResponse::Acknowledge).await?;
+        }
+        ServerRequest::Status => {
+            let Some(services) = state.get_instance(&id).await else {
+                chan.send(&ServerResponse::StatusResponse(StatusResponse {
+                    services: Default::default(),
+                }))
+                .await
+                .unwrap();
+                return Ok(());
+            };
+
+            let mut lock = services.lock().await;
+
+            let mut statuses = HashMap::new();
+
+            for (name, service) in lock.iter_mut() {
+                statuses.insert(name.clone(), service.status().await);
+            }
+
+            chan.send(&ServerResponse::StatusResponse(StatusResponse {
+                services: statuses,
+            }))
+            .await?;
+        }
+        ServerRequest::Up { structure, cwd } => {
+            let mut channels = HashMap::new();
+
+            for service_name in structure.services.keys() {
+                channels.insert(service_name.clone(), watch::channel(ServiceState::Pending));
+            }
+
+            let cwd = Arc::new(cwd);
+            let mut services: Services = HashMap::new();
+
+            for (service_name, service) in structure.services {
+                let Some((health_tx, health_rx)) = channels.get(&service_name).cloned() else {
                     continue;
                 };
 
-                let mut lock = services.lock().await;
+                // Collect the receivers for this service's 'after' list
+                let dependencies: DependencyList = service
+                    .after
+                    .iter()
+                    .filter_map(|dep_name| channels.get(dep_name).map(|(_, rx)| rx.clone()))
+                    .collect::<Vec<_>>()
+                    .into();
 
-                let mut statuses = HashMap::new();
+                let mut managed_service = ManagedService::new(health_tx, health_rx);
 
-                for (name, service) in lock.iter_mut() {
-                    statuses.insert(name.clone(), service.status().await);
-                }
+                let _ = managed_service.start(service, dependencies, cwd.clone());
 
-                chan.send(&ServerResponse::StatusResponse(StatusResponse {
-                    services: statuses,
+                services.insert(service_name.clone(), managed_service);
+            }
+
+            state.instances.lock().await.insert(id.clone(), services);
+            chan.send(&ServerResponse::Acknowledge).await?;
+        }
+        ServerRequest::Down => {
+            state.remove_instance(&id).await;
+
+            chan.send(&ServerResponse::Acknowledge).await?;
+        }
+        ServerRequest::ServiceLog {
+            service_name,
+            start_idx,
+        } => {
+            let Some(services_mutex) = state.get_instance(&id).await else {
+                chan.send(&ServerResponse::ServiceLogResponse(ServiceLogResponse {
+                    service_name,
+                    lines: vec![],
+                    next_idx: 0,
+                    dropped_history: false,
                 }))
-                .await?;
-            }
-            ServerRequest::Up { structure, cwd } => {
-                let mut channels = HashMap::new();
+                .await
+                .unwrap();
+                return Ok(());
+            };
 
-                for service_name in structure.services.keys() {
-                    channels.insert(service_name.clone(), watch::channel(ServiceState::Pending));
+            let services = services_mutex.lock().await;
+
+            match services.get(&service_name) {
+                Some(service) => {
+                    let result = service.log().get_since(start_idx.unwrap_or_default()).await;
+
+                    chan.send(&ServerResponse::ServiceLogResponse(ServiceLogResponse {
+                        service_name,
+                        lines: result.lines,
+                        next_idx: result.next_idx,
+                        dropped_history: result.dropped_history,
+                    }))
+                    .await
+                    .unwrap();
                 }
-
-                let cwd = Arc::new(cwd);
-                let mut services: Services = HashMap::new();
-
-                for (service_name, service) in structure.services {
-                    let Some((health_tx, health_rx)) = channels.get(&service_name).cloned() else {
-                        continue;
-                    };
-
-                    // Collect the receivers for this service's 'after' list
-                    let dependencies: DependencyList = service
-                        .after
-                        .iter()
-                        .filter_map(|dep_name| channels.get(dep_name).map(|(_, rx)| rx.clone()))
-                        .collect::<Vec<_>>()
-                        .into();
-
-                    let mut managed_service = ManagedService::new(health_tx, health_rx);
-
-                    let _ = managed_service.start(service, dependencies, cwd.clone());
-
-                    services.insert(service_name.clone(), managed_service);
-                }
-
-                state.instances.lock().await.insert(id.clone(), services);
-                chan.send(&ServerResponse::Initialized).await?;
-            }
-            ServerRequest::Down => {
-                state.remove_instance(&id).await;
-
-                chan.send(&ServerResponse::Initialized).await?;
-            }
-            ServerRequest::ServiceLog {
-                service_name,
-                start_idx,
-            } => {
-                let Some(services_mutex) = state.get_instance(&id).await else {
+                None => {
                     chan.send(&ServerResponse::ServiceLogResponse(ServiceLogResponse {
                         service_name,
                         lines: vec![],
@@ -189,36 +231,8 @@ async fn handle_conn(state: Arc<AppState>, conn: Stream) -> Result<(), Box<dyn s
                     }))
                     .await
                     .unwrap();
-                    continue;
-                };
-
-                let services = services_mutex.lock().await;
-
-                match services.get(&service_name) {
-                    Some(service) => {
-                        let result = service.log().get_since(start_idx.unwrap_or_default()).await;
-
-                        chan.send(&ServerResponse::ServiceLogResponse(ServiceLogResponse {
-                            service_name,
-                            lines: result.lines,
-                            next_idx: result.next_idx,
-                            dropped_history: result.dropped_history,
-                        }))
-                        .await
-                        .unwrap();
-                    }
-                    None => {
-                        chan.send(&ServerResponse::ServiceLogResponse(ServiceLogResponse {
-                            service_name,
-                            lines: vec![],
-                            next_idx: 0,
-                            dropped_history: false,
-                        }))
-                        .await
-                        .unwrap();
-                    }
-                };
-            }
+                }
+            };
         }
     }
 
