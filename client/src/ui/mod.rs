@@ -10,7 +10,7 @@ use crossterm::{
 use futures::StreamExt;
 use ratatui::{Frame, Terminal, backend::CrosstermBackend};
 
-use crate::{commands::Api, ui::home_state::HomeState};
+use crate::{api::Api, ui::home_state::HomeState};
 
 pub async fn run(api: &mut Api) -> anyhow::Result<()> {
     enable_raw_mode()?;
@@ -109,6 +109,8 @@ impl TuiApp {
     }
 }
 
+/// Determines the current main "screen" of the application. To add a new option, extend the TuiState
+/// with a new struct similar to the format of HomeState
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TuiState {
     Home(HomeState),

@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use base64::prelude::*;
 use common::{
     Channel, ReceiveError, SendError,
     message::{ServerRequest, ServerResponse, ServiceLogResponse, StatusResponse},
@@ -12,13 +11,21 @@ use interprocess::local_socket::{
 };
 use thiserror::Error;
 
+use crate::channel_id::ChannelId;
+
 #[derive(Debug)]
 pub struct Api {
+    /// The acutal identifier sent through the channel
+    id: ChannelId,
+
+    /// The full channel
     channel: Channel,
 }
 
 impl Api {
-    pub async fn connect(id: impl AsRef<[u8]>) -> anyhow::Result<Self> {
+    pub async fn connect(id: impl Into<ChannelId>) -> anyhow::Result<Self> {
+        let id = id.into();
+
         let printname = "example.sock";
         let name = printname.to_ns_name::<GenericNamespaced>()?;
 
@@ -27,7 +34,7 @@ impl Api {
         let mut channel = Channel::from_stream(conn);
 
         let message = ServerRequest::Initial {
-            id: BASE64_STANDARD.encode(id),
+            id: id.clone().into(),
         };
 
         channel.send(&message).await?;
@@ -38,7 +45,11 @@ impl Api {
             anyhow::bail!("Server unreachable")
         };
 
-        Ok(Self { channel })
+        Ok(Self { id, channel })
+    }
+
+    pub async fn clone(&self) -> anyhow::Result<Self> {
+        Self::connect(self.id.clone()).await
     }
 
     pub async fn get_status(&mut self) -> Result<StatusResponse, ApiError> {

@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-use crate::commands::Api;
+use crate::api::Api;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HomeState {
@@ -24,6 +24,8 @@ impl HomeState {
         };
 
         state.update(api).await;
+
+        state.list_state.select_first();
 
         state
     }

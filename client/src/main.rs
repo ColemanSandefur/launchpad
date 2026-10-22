@@ -1,4 +1,5 @@
-mod commands;
+mod api;
+mod channel_id;
 pub mod project_config;
 pub mod ui;
 
@@ -7,7 +8,7 @@ use std::{os::unix::ffi::OsStrExt, path::PathBuf};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::{commands::Api, project_config::ProjectConfig};
+use crate::{api::Api, project_config::ProjectConfig};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -57,10 +58,10 @@ async fn main() -> Result<()> {
             let is_running = !api.get_status().await?.services.is_empty();
 
             match is_running {
-                true => api.up(config.into(), current_dir).await?,
-                false => println!(
+                true => println!(
                     "The service was already running.\nIf you want to publish new changes, take the services down and back up."
                 ),
+                false => api.up(config.into(), current_dir).await?,
             }
 
             if !detach {

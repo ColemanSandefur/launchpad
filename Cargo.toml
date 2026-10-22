@@ -5,6 +5,11 @@ members = ["client", "common", "server"]
 [workspace.package]
 edition = "2024"
 
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = true
+
 [workspace.dependencies]
 anyhow = "1"
 base64 = "0.23"
