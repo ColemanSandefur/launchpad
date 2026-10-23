@@ -1,6 +1,9 @@
+mod dependency_list;
 pub mod instances;
 pub mod log;
 pub mod managed_service;
+mod process;
+mod service_state;
 
 use std::{collections::HashMap, io, sync::Arc, time::Duration};
 
@@ -18,8 +21,8 @@ use tokio::{
 };
 
 use crate::{
-    instances::Instances,
-    managed_service::{DependencyList, ManagedService, ServiceState},
+    dependency_list::DependencyList, instances::Instances, managed_service::ManagedService,
+    service_state::ServiceState,
 };
 
 type Services = HashMap<String, ManagedService>;
