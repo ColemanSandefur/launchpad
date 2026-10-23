@@ -6,26 +6,39 @@ use crate::structure::Structure;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum ServerRequest {
-    Initial {
-        id: String,
-    },
+    /// The initial request to set the socket's id for the session.
+    Initial { id: String },
+
+    /// Ping the server to ensure a valid connection.
+    Ping,
+
+    /// Request the status for the entire instance.
     Status,
-    Up {
-        structure: Structure,
-        cwd: PathBuf,
-    },
+
+    /// Bring the whole instance up.
+    Up { structure: Structure, cwd: PathBuf },
+
+    /// Take the whole instance down.
     Down,
+
+    /// Get the logs for a specific service in the current instance.
     ServiceLog {
         service_name: String,
         start_idx: Option<usize>,
     },
-    Ping,
+
+    /// Start a specific service in the current instance
+    Start { service_name: String },
+
+    /// Start a specific service in the current instance
+    Stop { service_name: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum ServerResponse {
     Initialized,
     Acknowledge,
+    Failure(String),
     StatusResponse(StatusResponse),
     ServiceLogResponse(ServiceLogResponse),
 }

@@ -143,13 +143,19 @@ async fn handle_event(
                 return Ok(());
             };
 
-            let mut lock = services.lock().await;
-
-            let mut statuses = HashMap::new();
-
-            for (name, service) in lock.iter_mut() {
-                statuses.insert(name.clone(), service.status().await);
-            }
+            let statuses = services
+                .lock()
+                .await
+                .iter()
+                .map(|(name, service)| {
+                    (
+                        name.clone(),
+                        common::message::ServiceStatus {
+                            state: service.status().into(),
+                        },
+                    )
+                })
+                .collect::<HashMap<_, _>>();
 
             chan.send(&ServerResponse::StatusResponse(StatusResponse {
                 services: statuses,
@@ -179,9 +185,10 @@ async fn handle_event(
                     .collect::<Vec<_>>()
                     .into();
 
-                let mut managed_service = ManagedService::new(health_tx, health_rx);
+                let mut managed_service =
+                    ManagedService::new(service, dependencies, cwd.clone(), health_tx, health_rx);
 
-                let _ = managed_service.start(service, dependencies, cwd.clone());
+                let _ = managed_service.start();
 
                 services.insert(service_name.clone(), managed_service);
             }
@@ -236,6 +243,51 @@ async fn handle_event(
                     .unwrap();
                 }
             };
+        }
+        ServerRequest::Start { service_name } => {
+            let Some(services_mutex) = state.get_instance(id).await else {
+                chan.send(&ServerResponse::Failure(
+                    "Unable to get the instance".into(),
+                ))
+                .await?;
+                return Ok(());
+            };
+
+            let mut services = services_mutex.lock().await;
+
+            let response = match services.get_mut(&service_name) {
+                Some(service) => match service.status() {
+                    x if x.is_dead() => match service.start() {
+                        Ok(_) => ServerResponse::Acknowledge,
+                        Err(err) => ServerResponse::Failure(format!("{err:?}")),
+                    },
+                    _ => ServerResponse::Acknowledge,
+                },
+                None => ServerResponse::Failure("No service found with that name".into()),
+            };
+
+            chan.send(&response).await?;
+        }
+        ServerRequest::Stop { service_name } => {
+            let Some(services_mutex) = state.get_instance(id).await else {
+                chan.send(&ServerResponse::Failure(
+                    "Unable to get the instance".into(),
+                ))
+                .await?;
+                return Ok(());
+            };
+
+            let mut services = services_mutex.lock().await;
+
+            let response = match services.get_mut(&service_name) {
+                Some(service) => {
+                    service.stop().await;
+                    ServerResponse::Acknowledge
+                }
+                None => ServerResponse::Failure("No service found with that name".into()),
+            };
+
+            chan.send(&response).await?;
         }
     }
 

@@ -29,16 +29,46 @@ enum Commands {
         #[arg(short, long)]
         detach: bool,
     },
+
     /// Stop all the services
     Down,
+
     /// Get the status of the services
     Status,
-    /// Get the logs for a specific service
+
+    /// Get the logs for a specific service.
     Logs {
+        /// The name of the service.
         name: String,
+
         start_idx: Option<usize>,
     },
-    /// Checks if the given config is valid
+
+    /// Start a specific service.
+    ///
+    /// Currently, you need to have the instance running first by using the `up` command.
+    Start {
+        /// The name of the service.
+        name: String,
+    },
+
+    /// Stop a specific service.
+    ///
+    /// Currently, you need to have the instance running first by using the `up` command.
+    Stop {
+        /// The name of the service.
+        name: String,
+    },
+
+    /// Restart a specific service.
+    ///
+    /// Currently, you need to have the instance running first by using the `up` command.
+    Restart {
+        /// The name of the service.
+        name: String,
+    },
+
+    /// Checks if the given config is valid.
     Validate,
 }
 
@@ -82,6 +112,12 @@ async fn main() -> Result<()> {
             let lines = api.logs(name, start_idx).await?.lines;
 
             println!("{}", lines.join("\n"));
+        }
+        Commands::Start { name } => api.start(name).await?,
+        Commands::Stop { name } => api.stop(name).await?,
+        Commands::Restart { name } => {
+            api.stop(name.clone()).await?;
+            api.start(name).await?;
         }
         Commands::Validate => {
             println!("Valid!");

@@ -2,6 +2,7 @@ use tokio::sync::watch;
 
 use crate::service_state::ServiceState;
 
+#[derive(Debug, Clone)]
 pub struct DependencyList(pub Vec<watch::Receiver<ServiceState>>);
 
 impl DependencyList {

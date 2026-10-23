@@ -169,6 +169,54 @@ impl Api {
             ))),
         }
     }
+
+    pub async fn start(&mut self, service_name: impl Into<String>) -> Result<(), ApiError> {
+        self.channel
+            .send(&ServerRequest::Start {
+                service_name: service_name.into(),
+            })
+            .await?;
+
+        let response = match self.channel.receive::<ServerResponse>().await {
+            Some(val) => val?,
+            None => {
+                return Err(ApiError::ConnectionClosed(anyhow::anyhow!(
+                    "Connection closed"
+                )));
+            }
+        };
+
+        match response {
+            ServerResponse::Acknowledge => Ok(()),
+            x => Err(ApiError::InvalidResponse(anyhow::anyhow!(
+                "Invalid response received: {x:?}"
+            ))),
+        }
+    }
+
+    pub async fn stop(&mut self, service_name: impl Into<String>) -> Result<(), ApiError> {
+        self.channel
+            .send(&ServerRequest::Stop {
+                service_name: service_name.into(),
+            })
+            .await?;
+
+        let response = match self.channel.receive::<ServerResponse>().await {
+            Some(val) => val?,
+            None => {
+                return Err(ApiError::ConnectionClosed(anyhow::anyhow!(
+                    "Connection closed"
+                )));
+            }
+        };
+
+        match response {
+            ServerResponse::Acknowledge => Ok(()),
+            x => Err(ApiError::InvalidResponse(anyhow::anyhow!(
+                "Invalid response received: {x:?}"
+            ))),
+        }
+    }
 }
 
 #[derive(Error, Debug)]

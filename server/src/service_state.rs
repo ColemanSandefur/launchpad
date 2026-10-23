@@ -26,3 +26,17 @@ impl ServiceState {
         matches!(self, ServiceState::Stopped | ServiceState::Failed)
     }
 }
+
+impl From<ServiceState> for common::message::ServiceState {
+    fn from(value: ServiceState) -> Self {
+        match value {
+            ServiceState::Pending => common::message::ServiceState::Pending,
+            ServiceState::Starting => common::message::ServiceState::Starting,
+            ServiceState::Healthy => common::message::ServiceState::Healthy,
+            ServiceState::Unhealthy => common::message::ServiceState::Unhealthy,
+            ServiceState::Stopping => common::message::ServiceState::Stopping,
+            ServiceState::Stopped => common::message::ServiceState::Stopped,
+            ServiceState::Failed => common::message::ServiceState::Failed,
+        }
+    }
+}

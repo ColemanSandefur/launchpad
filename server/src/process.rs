@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use common::structure::{HealthCheck, HealthCheckProbe, Service};
-use portable_pty::{PtySize, native_pty_system};
+use portable_pty::{ChildKiller, PtySize, native_pty_system};
 use reqwest::{Client, Url};
 use tokio::{
     sync::{Mutex, watch},
@@ -20,6 +20,7 @@ use crate::{log::LogBuffer, service_state::ServiceState};
 #[derive(Debug)]
 pub struct Process {
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
     log_thread: JoinHandle<()>,
     health_check_thread: JoinHandle<Result<()>>,
     exit_monitor_thread: JoinHandle<()>,
@@ -34,6 +35,7 @@ impl Process {
         health_tx: watch::Sender<ServiceState>,
         health_rx: watch::Receiver<ServiceState>,
     ) -> Result<Self> {
+        let _ = health_tx.send(ServiceState::Starting);
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -51,6 +53,8 @@ impl Process {
             .slave
             .spawn_command(cmd)
             .context("Failed to start the command")?;
+
+        let killer = child.clone_killer();
 
         let reader = pair
             .master
@@ -71,11 +75,15 @@ impl Process {
             health_rx.clone(),
         ));
 
-        let exit_monitor_thread =
-            tokio::spawn(Self::monitor_exit(child.clone(), health_tx.clone()));
+        let exit_monitor_thread = tokio::spawn(Self::monitor_exit(
+            child.clone(),
+            health_tx.clone(),
+            health_rx.clone(),
+        ));
 
         Ok(Self {
             child,
+            killer,
             log_thread,
             health_check_thread,
             exit_monitor_thread,
@@ -90,10 +98,7 @@ impl Process {
         // Kill the child process
         let _ = self.child.lock().await.kill();
 
-        // Kill all the worker threads
-        self.log_thread.abort();
-        self.health_check_thread.abort();
-        self.exit_monitor_thread.abort();
+        let _ = self.health_tx.send(ServiceState::Stopped);
     }
 
     fn monitor_logs<R>(inner: R, buffer: LogBuffer, health_rx: watch::Receiver<ServiceState>)
@@ -191,8 +196,9 @@ impl Process {
     async fn monitor_exit(
         child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
         health_tx: watch::Sender<ServiceState>,
+        health_rx: watch::Receiver<ServiceState>,
     ) {
-        loop {
+        while !health_rx.borrow().is_dead() {
             tokio::time::sleep(Duration::from_millis(500)).await;
 
             let mut guard = child.lock().await;
@@ -225,6 +231,10 @@ impl Process {
 impl Drop for Process {
     fn drop(&mut self) {
         println!("Dropping process...");
+
+        if let Err(e) = self.killer.kill() {
+            eprintln!("Failed to kill PTY child on drop: {e}");
+        }
 
         // Kill all the worker threads
         self.log_thread.abort();

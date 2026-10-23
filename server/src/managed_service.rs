@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
-use common::{message::ServiceStatus, structure::Service};
+use common::structure::Service;
 use tokio::{
     sync::{Mutex, watch},
     task::JoinHandle,
@@ -13,7 +13,10 @@ use crate::{
 
 #[derive(Debug)]
 pub struct ManagedService {
-    child: Arc<Mutex<Option<Process>>>, // Kept alive here so it doesn't drop/kill immediately
+    child: Arc<Mutex<Option<Process>>>,
+    service: Box<Service>,
+    dependencies: DependencyList,
+    cwd: Arc<PathBuf>,
     log_buffer: LogBuffer,
     health_tx: watch::Sender<ServiceState>,
     health_rx: watch::Receiver<ServiceState>,
@@ -22,11 +25,17 @@ pub struct ManagedService {
 
 impl ManagedService {
     pub fn new(
+        service: Service,
+        dependencies: DependencyList,
+        cwd: Arc<PathBuf>,
         health_tx: watch::Sender<ServiceState>,
         health_rx: watch::Receiver<ServiceState>,
     ) -> Self {
         Self {
             child: Arc::new(Mutex::new(None)),
+            service: Box::new(service),
+            dependencies,
+            cwd,
             log_buffer: LogBuffer::new(2000),
             health_tx,
             health_rx,
@@ -35,26 +44,22 @@ impl ManagedService {
     }
 
     /// Start a new ManagedService.
-    pub fn start(
-        &mut self,
-        service: Service,
-        mut dependencies: DependencyList,
-        cwd: Arc<PathBuf>,
-    ) -> Result<()> {
-        let process_ref = self.child.clone();
+    pub fn start(&mut self) -> Result<()> {
+        let child = self.child.clone();
+        let service = self.service.clone();
+        let mut dependencies = self.dependencies.clone();
+        let cwd = self.cwd.clone();
+        let log_buffer = self.log_buffer.clone();
         let health_tx = self.health_tx.clone();
         let health_rx = self.health_rx.clone();
-        let log_buffer = self.log_buffer.clone();
-
-        let _ = health_tx.send(ServiceState::Starting);
 
         let handle = tokio::spawn(async move {
             dependencies.wait_for_healthy().await;
-            let process = Process::start(service, log_buffer, &*cwd, health_tx, health_rx).await;
+            let process = Process::start(*service, log_buffer, &*cwd, health_tx, health_rx).await;
 
             match process {
                 Ok(p) => {
-                    (*process_ref.lock().await) = Some(p);
+                    (*child.lock().await) = Some(p);
                     Ok(())
                 }
                 Err(e) => {
@@ -78,23 +83,13 @@ impl ManagedService {
 
         let mut lock = self.child.lock().await;
 
-        lock.as_mut().map(|e| e.stop());
-        *lock = None;
+        if let Some(mut child) = lock.take() {
+            child.stop().await;
+        }
     }
 
-    pub async fn status(&mut self) -> ServiceStatus {
-        let lock = self.health_rx.borrow();
-        let state = match *lock {
-            ServiceState::Pending => common::message::ServiceState::Pending,
-            ServiceState::Starting => common::message::ServiceState::Starting,
-            ServiceState::Healthy => common::message::ServiceState::Healthy,
-            ServiceState::Unhealthy => common::message::ServiceState::Unhealthy,
-            ServiceState::Stopping => common::message::ServiceState::Stopping,
-            ServiceState::Stopped => common::message::ServiceState::Stopped,
-            ServiceState::Failed => common::message::ServiceState::Failed,
-        };
-
-        ServiceStatus { state }
+    pub fn status(&self) -> ServiceState {
+        *self.health_rx.borrow()
     }
 
     pub fn log(&self) -> &LogBuffer {
