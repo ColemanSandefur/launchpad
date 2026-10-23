@@ -3,7 +3,7 @@ use crossterm::event::{Event, KeyCode};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use tokio::sync::{mpsc, watch};
 
@@ -14,6 +14,12 @@ enum LogMessage {
     ViewHome,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Scroll {
+    AutoScroll,
+    Static(u16),
+}
+
 #[derive(Debug)]
 pub struct LogState {
     pool: Pool<ConnectionManager>,
@@ -22,6 +28,8 @@ pub struct LogState {
     tx: mpsc::Sender<LogMessage>,
     rx: mpsc::Receiver<LogMessage>,
     signal: watch::Sender<bool>,
+    scroll: Scroll,
+    max_scroll: u16,
 }
 
 impl LogState {
@@ -39,6 +47,8 @@ impl LogState {
             tx,
             rx,
             signal,
+            scroll: Scroll::AutoScroll,
+            max_scroll: 0,
         };
 
         state.tick();
@@ -60,24 +70,34 @@ impl LogState {
         let log_title = format!(" Logs [{}] ", self.service_name);
         let log_text = self.logs.join("\n");
 
-        // Calculate inner height of the pane (subtract 2 for top/bottom borders)
-        let log_area_height = chunks[0].height.saturating_sub(2) as usize;
-        let total_lines = self.logs.len();
-
         // Scroll down so the bottom-most lines are always visible
-        let scroll_y = if total_lines > log_area_height {
+        let logs_paragraph = Paragraph::new(log_text)
+            .block(Block::default().borders(Borders::ALL).title(log_title))
+            .wrap(Wrap { trim: false });
+
+        let log_area_height = chunks[0].height as usize;
+        let total_lines = logs_paragraph.line_count(chunks[0].width);
+        let max_scroll = if total_lines > log_area_height {
             (total_lines - log_area_height) as u16
         } else {
             0
         };
-        let logs_paragraph = Paragraph::new(log_text)
-            .scroll((scroll_y, 0))
-            .block(Block::default().borders(Borders::ALL).title(log_title));
-        f.render_widget(logs_paragraph, chunks[0]);
+        self.max_scroll = max_scroll;
+
+        // Calculate inner height of the pane (subtract 2 for top/bottom borders)
+        let scroll_y = match self.scroll {
+            Scroll::AutoScroll => max_scroll,
+            Scroll::Static(y) => y.min(max_scroll),
+        };
+
+        f.render_widget(logs_paragraph.scroll((scroll_y, 0)), chunks[0]);
 
         // 3. Footer instructions
-        let footer = Paragraph::new(" [↑/↓ or j/k] Navigate | [r] Refresh | [b] Back | [q] Quit")
-            .block(Block::default().borders(Borders::ALL));
+        let footer = Paragraph::new(match self.scroll {
+            Scroll::AutoScroll => " [↑/↓ or j/k] Navigate | [g] Scroll Top | [b] Back | [q] Quit",
+            Scroll::Static(_) => " [↑/↓ or j/k] Navigate | [G] Scroll Bottom | [b] Back | [q] Quit",
+        })
+        .block(Block::default().borders(Borders::ALL));
         f.render_widget(footer, chunks[1]);
     }
 
@@ -87,6 +107,39 @@ impl LogState {
             match key.code {
                 KeyCode::Char('b') => {
                     let _ = self.tx.send(LogMessage::ViewHome).await;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    match self.scroll {
+                        Scroll::AutoScroll => {
+                            // User scrolled up from bottom: switch to static one step above max
+                            self.scroll = Scroll::Static(self.max_scroll.saturating_sub(1));
+                        }
+                        Scroll::Static(y) => {
+                            self.scroll = Scroll::Static(y.saturating_sub(1));
+                        }
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    match self.scroll {
+                        Scroll::AutoScroll => {} // Already at bottom
+                        Scroll::Static(y) => {
+                            let next_y = y.saturating_add(1);
+                            if next_y >= self.max_scroll {
+                                // Reached the bottom again: resume auto-scroll
+                                self.scroll = Scroll::AutoScroll;
+                            } else {
+                                self.scroll = Scroll::Static(next_y);
+                            }
+                        }
+                    }
+                }
+                KeyCode::Char('g') => {
+                    // Press 'g' to instantly jump to the top
+                    self.scroll = Scroll::Static(0);
+                }
+                KeyCode::Char('G') => {
+                    // Press 'G' to instantly jump back to live auto-scrolling
+                    self.scroll = Scroll::AutoScroll;
                 }
                 _ => {}
             }

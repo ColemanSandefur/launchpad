@@ -1,17 +1,18 @@
 use bb8::Pool;
+use common::message::ServiceState;
 use crossterm::event::{Event, KeyCode};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
 };
 use tokio::sync::{mpsc, watch};
 
 use crate::{connection_manager::ConnectionManager, ui::TuiEvent};
 
 enum HomeMessage {
-    Services(Vec<(String, String)>),
+    Services(Vec<(String, ServiceState)>),
     LogsUpdate(Vec<String>),
     ViewLog(String),
 }
@@ -19,9 +20,9 @@ enum HomeMessage {
 #[derive(Debug)]
 pub struct HomeState {
     pool: Pool<ConnectionManager>,
-    services: Vec<(String, String)>, // Name and Status
-    list_state: ListState,           // Tracks selected service index
-    selected_logs: Vec<String>,      // Logs for the currently selected service
+    services: Vec<(String, ServiceState)>, // Name and Status
+    list_state: TableState,                // Tracks selected service index
+    selected_logs: Vec<String>,            // Logs for the currently selected service
     tx: mpsc::Sender<HomeMessage>,
     rx: mpsc::Receiver<HomeMessage>,
     signal: watch::Sender<bool>,
@@ -53,35 +54,67 @@ impl HomeState {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(40),
-                Constraint::Percentage(50),
+                Constraint::Percentage(100),
                 Constraint::Length(3), // Footer
             ])
             .split(f.area());
 
-        // 1. Services List Pane
-        let items: Vec<ListItem> = self
+        let content = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(30), Constraint::Fill(1)])
+            .split(chunks[0]);
+
+        self.render_services(f, content[0]);
+        self.render_logs(f, content[1]);
+
+        let footer =
+            Paragraph::new(" [↑/↓ or j/k] Navigate | [r] Refresh | [v] View Logs | [q] Quit")
+                .block(Block::default().borders(Borders::ALL));
+        f.render_widget(footer, chunks[1]);
+    }
+
+    fn render_services(&mut self, f: &mut Frame<'_>, area: Rect) {
+        let rows: Vec<Row> = self
             .services
             .iter()
-            .map(|(name, status)| ListItem::new(format!("{:<20} : {}", name, status)))
+            .map(|(name, status)| {
+                // Optional: Style the status cell based on its value
+                let status_color = match status {
+                    ServiceState::Healthy => Color::Green,
+                    ServiceState::Failed | ServiceState::Unhealthy => Color::Red,
+                    ServiceState::Stopped => Color::LightMagenta,
+                    _ => Color::Yellow,
+                };
+
+                Row::new(vec![
+                    Cell::from(name.clone()),
+                    Cell::from(format!("{:?}", status)).style(Style::default().fg(status_color)),
+                ])
+            })
             .collect();
 
-        let list = List::new(items)
+        let table = Table::new(rows, [Constraint::Fill(1), Constraint::Length(8)])
+            .header(
+                Row::new(vec!["Service Name", "Status"])
+                    .style(Style::default().add_modifier(Modifier::BOLD))
+                    .bottom_margin(1),
+            )
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title("Managed Services"),
             )
-            .highlight_style(
+            .row_highlight_style(
                 Style::default()
                     .bg(Color::DarkGray)
-                    .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             )
-            .highlight_symbol(">> ");
-        f.render_stateful_widget(list, chunks[0], &mut self.list_state);
+            .highlight_symbol("> ");
 
-        // 2. Logs Pane
+        f.render_stateful_widget(table, area, &mut self.list_state);
+    }
+
+    fn render_logs(&self, f: &mut Frame<'_>, area: Rect) {
         let log_title = format!(
             " Logs [{}] ",
             self.selected_service_name().unwrap_or("None")
@@ -89,7 +122,7 @@ impl HomeState {
         let log_text = self.selected_logs.join("\n");
 
         // Calculate inner height of the pane (subtract 2 for top/bottom borders)
-        let log_area_height = chunks[1].height.saturating_sub(2) as usize;
+        let log_area_height = area.height.saturating_sub(2) as usize;
         let total_lines = self.selected_logs.len();
 
         // Scroll down so the bottom-most lines are always visible
@@ -101,13 +134,7 @@ impl HomeState {
         let logs_paragraph = Paragraph::new(log_text)
             .scroll((scroll_y, 0))
             .block(Block::default().borders(Borders::ALL).title(log_title));
-        f.render_widget(logs_paragraph, chunks[1]);
-
-        // 3. Footer instructions
-        let footer =
-            Paragraph::new(" [↑/↓ or j/k] Navigate | [r] Refresh | [v] View Logs | [q] Quit")
-                .block(Block::default().borders(Borders::ALL));
-        f.render_widget(footer, chunks[2]);
+        f.render_widget(logs_paragraph, area);
     }
 
     pub async fn key_event(&mut self, event: &Event) {
@@ -204,6 +231,10 @@ impl HomeState {
         {
             self.list_state.select(Some(self.services.len() - 1));
         }
+
+        if self.list_state.selected().is_none() {
+            self.list_state.select_first();
+        }
     }
 
     fn selected_service_name(&self) -> Option<&str> {
@@ -232,7 +263,7 @@ impl HomeState {
             let mut services: Vec<_> = result
                 .services
                 .into_iter()
-                .map(|(name, service)| (name, format!("{:?}", service.state)))
+                .map(|(name, status)| (name, status.state))
                 .collect();
 
             services.sort_by(|a, b| a.0.cmp(&b.0));
