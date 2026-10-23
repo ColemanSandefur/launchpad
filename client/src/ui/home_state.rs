@@ -1,3 +1,4 @@
+use ansi_to_tui::IntoText;
 use bb8::Pool;
 use common::message::ServiceState;
 use crossterm::event::{Event, KeyCode};
@@ -119,7 +120,11 @@ impl HomeState {
             " Logs [{}] ",
             self.selected_service_name().unwrap_or("None")
         );
-        let log_text = self.selected_logs.join("\n");
+        let log_text = self
+            .selected_logs
+            .join("\n")
+            .into_text()
+            .unwrap_or_default();
 
         // Calculate inner height of the pane (subtract 2 for top/bottom borders)
         let log_area_height = area.height.saturating_sub(2) as usize;

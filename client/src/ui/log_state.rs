@@ -1,3 +1,4 @@
+use ansi_to_tui::IntoText;
 use bb8::Pool;
 use crossterm::event::{Event, KeyCode};
 use ratatui::{
@@ -68,7 +69,7 @@ impl LogState {
 
         // 2. Logs Pane
         let log_title = format!(" Logs [{}] ", self.service_name);
-        let log_text = self.logs.join("\n");
+        let log_text = self.logs.join("\n").into_text().unwrap_or_default();
 
         // Scroll down so the bottom-most lines are always visible
         let logs_paragraph = Paragraph::new(log_text)
