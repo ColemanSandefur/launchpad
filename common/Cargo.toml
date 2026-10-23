@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 futures = { workspace = true }
 interprocess = { workspace = true }
+portable-pty = { workspace = true }
 postcard = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

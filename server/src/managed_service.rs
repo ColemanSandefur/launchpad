@@ -1,6 +1,7 @@
 use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
+    ffi::OsStr,
+    io::{BufRead, BufReader, Read},
+    path::PathBuf,
     str::FromStr,
     sync::Arc,
     time::Duration,
@@ -11,9 +12,9 @@ use common::{
     message::ServiceStatus,
     structure::{HealthCheck, HealthCheckProbe, Service},
 };
+use portable_pty::{PtySize, native_pty_system};
 use reqwest::{Client, Url};
 use tokio::{
-    process::Child,
     sync::{Mutex, watch},
     task::JoinHandle,
 };
@@ -73,9 +74,8 @@ impl ServiceState {
 
 #[derive(Debug)]
 pub struct Process {
-    child: Arc<Mutex<Child>>,
-    stdout_thread: JoinHandle<()>,
-    stderr_thread: JoinHandle<()>,
+    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    log_thread: JoinHandle<()>,
     health_check_thread: JoinHandle<Result<()>>,
     exit_monitor_thread: JoinHandle<()>,
     health_tx: watch::Sender<ServiceState>,
@@ -85,35 +85,40 @@ impl Process {
     pub async fn start(
         service: Service,
         log_buffer: LogBuffer,
-        cwd: impl AsRef<Path>,
+        cwd: impl AsRef<OsStr>,
         health_tx: watch::Sender<ServiceState>,
         health_rx: watch::Receiver<ServiceState>,
     ) -> Result<Self> {
-        let mut child = service
-            .to_command()
-            .current_dir(cwd)
-            .kill_on_drop(true)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("Failed to open PTY pair")?;
+
+        let mut cmd = service.to_pty_command();
+        cmd.cwd(cwd);
+
+        let child = pair
+            .slave
+            .spawn_command(cmd)
             .context("Failed to start the command")?;
 
-        let stdout = child.stdout.take().context("Failed to take stdout")?;
-        let stderr = child.stderr.take().context("Failed to take stderr")?;
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .context("Failed to clone PTY reader")?;
 
         let child = Arc::new(Mutex::new(child));
 
-        let stdout_thread = tokio::spawn(Self::monitor_logs(
-            stdout,
-            log_buffer.clone(),
-            health_rx.clone(),
-        ));
-
-        let stderr_thread = tokio::spawn(Self::monitor_logs(
-            stderr,
-            log_buffer.clone(),
-            health_rx.clone(),
-        ));
+        let log_thread = {
+            let log_buffer = log_buffer.clone();
+            let health_rx = health_rx.clone();
+            tokio::task::spawn_blocking(move || Self::monitor_logs(reader, log_buffer, health_rx))
+        };
 
         let health_check_thread = tokio::spawn(Self::monitor_health(
             service.health_check,
@@ -126,8 +131,7 @@ impl Process {
 
         Ok(Self {
             child,
-            stdout_thread,
-            stderr_thread,
+            log_thread,
             health_check_thread,
             exit_monitor_thread,
             health_tx,
@@ -139,29 +143,32 @@ impl Process {
         let _ = self.health_tx.send(ServiceState::Stopping);
 
         // Kill the child process
-        let _ = self.child.lock().await.start_kill();
+        let _ = self.child.lock().await.kill();
 
         // Kill all the worker threads
-        self.stdout_thread.abort();
-        self.stderr_thread.abort();
+        self.log_thread.abort();
         self.health_check_thread.abort();
         self.exit_monitor_thread.abort();
     }
 
-    async fn monitor_logs<R>(inner: R, buffer: LogBuffer, health_rx: watch::Receiver<ServiceState>)
+    fn monitor_logs<R>(inner: R, buffer: LogBuffer, health_rx: watch::Receiver<ServiceState>)
     where
-        R: tokio::io::AsyncRead + Unpin,
+        R: Read + Send,
     {
-        let reader = tokio::io::BufReader::new(inner);
-        let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
+        let buf_reader = BufReader::new(inner);
+        let mut lines = buf_reader.lines();
 
-        while !health_rx.borrow().is_dead()
-            && let Ok(Some(line)) = lines.next_line().await
-        {
-            buffer.push(line).await;
+        let rt = tokio::runtime::Handle::current();
+
+        while !health_rx.borrow().is_dead() {
+            match lines.next() {
+                Some(Ok(line)) => {
+                    rt.block_on(buffer.push(line));
+                }
+                _ => break,
+            }
         }
-
-        println!("Leaving monitor_logs");
+        println!("Leaving monitor_logs (PTY)");
     }
 
     async fn monitor_health(
@@ -236,14 +243,17 @@ impl Process {
         }
     }
 
-    async fn monitor_exit(child: Arc<Mutex<Child>>, health_tx: watch::Sender<ServiceState>) {
+    async fn monitor_exit(
+        child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+        health_tx: watch::Sender<ServiceState>,
+    ) {
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
 
             let mut guard = child.lock().await;
             match guard.try_wait() {
                 Ok(Some(status)) => {
-                    drop(guard); // Release lock immediately
+                    drop(guard);
                     let new_state = if status.success() {
                         ServiceState::Stopped
                     } else {
@@ -272,8 +282,7 @@ impl Drop for Process {
         println!("Dropping process...");
 
         // Kill all the worker threads
-        self.stdout_thread.abort();
-        self.stderr_thread.abort();
+        self.log_thread.abort();
         self.health_check_thread.abort();
         self.exit_monitor_thread.abort();
     }
@@ -295,7 +304,7 @@ impl ManagedService {
     ) -> Self {
         Self {
             child: Arc::new(Mutex::new(None)),
-            log_buffer: LogBuffer::new(1000),
+            log_buffer: LogBuffer::new(2000),
             health_tx,
             health_rx,
             startup_handle: None,

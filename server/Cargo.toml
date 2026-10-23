@@ -8,6 +8,7 @@ anyhow = { workspace = true }
 common = { path = "../common" }
 futures = { workspace = true }
 interprocess = { workspace = true }
+portable-pty = { workspace = true }
 postcard = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

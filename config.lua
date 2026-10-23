@@ -27,6 +27,10 @@ return {
                 test = 'hello there!'
             }
         },
+        color = {
+            command = "cargo",
+            args = {"help"}
+        },
         depends = {
             command = "python",
             args = {"-m", "http.server", "8088"},

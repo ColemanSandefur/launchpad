@@ -1,5 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
+use portable_pty::CommandBuilder;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
@@ -22,6 +23,17 @@ impl Service {
         let mut command = Command::new(&self.program);
         command.args(&self.args);
         command.envs(&self.env);
+
+        command
+    }
+
+    pub fn to_pty_command(&self) -> CommandBuilder {
+        let mut command = CommandBuilder::new(&self.program);
+        command.args(&self.args);
+
+        for (key, value) in &self.env {
+            command.env(key, value);
+        }
 
         command
     }
