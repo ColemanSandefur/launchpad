@@ -29,7 +29,48 @@ impl Api {
         let printname = "example.sock";
         let name = printname.to_ns_name::<GenericNamespaced>()?;
 
-        let conn = Stream::connect(name).await?;
+        let conn = match Stream::connect(name.clone()).await {
+            Ok(c) => c,
+            Err(_e) => {
+                println!("Server not running. Launching launchpad-server...");
+
+                // Spawn the server binary in the background
+                #[cfg(debug_assertions)]
+                {
+                    use std::process::Stdio;
+
+                    std::process::Command::new("../target/debug/launchpad-server")
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()?;
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    use std::process::Stdio;
+
+                    std::process::Command::new("launchpad-server")
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()?;
+                }
+
+                // Retry connecting while the server spins up and binds the socket
+                let mut connected_stream = None;
+                for _ in 0..10 {
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    if let Ok(c) = Stream::connect(name.clone()).await {
+                        connected_stream = Some(c);
+                        break;
+                    }
+                }
+
+                connected_stream.ok_or_else(|| {
+                    anyhow::anyhow!("Failed to connect to launchpad-server after auto-launching")
+                })?
+            }
+        };
 
         let mut channel = Channel::from_stream(conn);
 

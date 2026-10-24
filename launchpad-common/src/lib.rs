@@ -1,5 +1,3 @@
-#![feature(core_io)]
-
 use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::tokio::Stream;
 use serde::de::DeserializeOwned;
@@ -15,7 +13,7 @@ pub enum SendError {
     Postcard(#[from] postcard::Error),
 
     #[error("An IO error occurred: {0}")]
-    Io(#[from] core::io::Error),
+    Io(#[from] std::io::Error),
 }
 
 #[derive(Error, Debug)]
@@ -24,7 +22,7 @@ pub enum ReceiveError {
     Postcard(#[from] postcard::Error),
 
     #[error("An IO error occurred: {0}")]
-    Io(#[from] core::io::Error),
+    Io(#[from] std::io::Error),
 }
 
 #[derive(Debug)]

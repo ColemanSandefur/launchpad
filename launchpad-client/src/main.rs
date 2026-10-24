@@ -14,7 +14,7 @@ use crate::{api::Api, channel_id::ChannelId, project_config::ProjectConfig};
 #[derive(Parser, Debug)]
 struct Args {
     /// Path to the service configuration file
-    #[arg(short, long, default_value = "./config.lua")]
+    #[arg(short, long, default_value = "./launchpad.lua")]
     config: PathBuf,
 
     #[command(subcommand)]

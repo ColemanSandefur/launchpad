@@ -3,13 +3,17 @@ name = "client"
 version = "0.1.0"
 edition.workspace = true
 
+[[bin]]
+name = "launchpad"
+path = "src/main.rs"
+
 [dependencies]
 ansi-to-tui = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 bb8 = { workspace = true }
 clap = { workspace = true }
-common = { path = "../common" }
+common = { path = "../launchpad-common" }
 crossterm = { workspace = true }
 dotenvy = { workspace = true }
 futures = { workspace = true }

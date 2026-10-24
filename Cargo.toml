@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["client", "common", "server"]
+members = ["launchpad-client", "launchpad-common", "launchpad-server"]
 
 [workspace.package]
 edition = "2024"
