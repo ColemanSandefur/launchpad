@@ -5,6 +5,9 @@
 devenv.local.nix
 devenv.local.yaml
 
+# flake.nix
+/result
+
 # direnv
 .direnv
 
