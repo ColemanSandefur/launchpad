@@ -93,7 +93,10 @@ async fn main() -> Result<()> {
                 true => println!(
                     "The service was already running.\nIf you want to publish new changes, take the services down and back up."
                 ),
-                false => api.up(config.into(), current_dir).await?,
+                false => {
+                    api.up(config.to_structure(&config_path), current_dir)
+                        .await?
+                }
             }
 
             if !detach {

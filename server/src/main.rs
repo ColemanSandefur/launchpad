@@ -185,8 +185,20 @@ async fn handle_event(
                     .collect::<Vec<_>>()
                     .into();
 
-                let mut managed_service =
-                    ManagedService::new(service, dependencies, cwd.clone(), health_tx, health_rx);
+                let mut managed_service = match ManagedService::new(
+                    service,
+                    dependencies,
+                    cwd.clone(),
+                    health_tx,
+                    health_rx,
+                ) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        chan.send(&ServerResponse::Failure(format!("{err:?}")))
+                            .await?;
+                        return Ok(());
+                    }
+                };
 
                 let _ = managed_service.start();
 

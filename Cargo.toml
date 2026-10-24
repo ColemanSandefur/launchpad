@@ -18,6 +18,7 @@ bb8 = "0.9.1"
 clap = { version = "4.6.7", features = ["derive"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 dotenvy = "0.15.7"
+globset = { version = "0.4.20", features = ["serde"] }
 futures = { version = "0.3", features = [] }
 interprocess = { version = "2.4.6", features = ["tokio"] }
 mlua = { version = "0.12", features = [
@@ -26,6 +27,8 @@ mlua = { version = "0.12", features = [
   "serde",
   "error-send",
 ] }
+notify = "8.2.0"
+path-absolutize = "4.0.1"
 portable-pty = "0.9.0"
 postcard = { version = "1", features = ["use-std", "alloc"] }
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }

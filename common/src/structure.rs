@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use portable_pty::CommandBuilder;
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,7 @@ pub struct Service {
     pub env: HashMap<String, String>,
     pub after: Vec<String>,
     pub health_check: Option<HealthCheck>,
+    pub watch: Option<Watch>,
 }
 
 impl Service {
@@ -92,4 +93,11 @@ pub enum HealthCheckProbe {
         /// The schema to connect to - e.g. `http`
         schema: String,
     },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Watch {
+    pub paths: Vec<PathBuf>,
+    pub extensions: Vec<String>,
+    pub ignore: Vec<String>,
 }

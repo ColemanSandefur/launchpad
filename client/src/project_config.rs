@@ -1,12 +1,13 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
 use common::structure::{Service, Structure};
 use mlua::{Lua, LuaSerdeExt};
+use path_absolutize::Absolutize;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
@@ -99,15 +100,13 @@ impl ProjectConfig {
 
         Ok(())
     }
-}
 
-impl Into<Structure> for ProjectConfig {
-    fn into(self) -> Structure {
+    pub fn to_structure(self, config_path: &Path) -> Structure {
         Structure {
             services: self
                 .services
                 .into_iter()
-                .map(|(name, service)| (name.clone(), service.into()))
+                .map(|(name, service)| (name.clone(), service.to_service(config_path)))
                 .collect(),
         }
     }
@@ -131,6 +130,9 @@ pub struct ServiceConfig {
 
     #[serde(default)]
     pub health_check: Option<HealthCheck>,
+
+    #[serde(default)]
+    pub watch: Option<Watch>,
 }
 
 impl ServiceConfig {
@@ -155,16 +157,15 @@ impl ServiceConfig {
 
         env
     }
-}
 
-impl Into<Service> for ServiceConfig {
-    fn into(self) -> Service {
+    pub fn to_service(self, config_path: &Path) -> Service {
         Service {
             env: self.resolve_env(),
             program: self.command,
             args: self.args,
             after: self.after,
             health_check: self.health_check.map(|h| h.into()),
+            watch: self.watch.map(|w| w.to_watch(config_path)),
         }
     }
 }
@@ -190,7 +191,7 @@ pub struct HealthCheck {
     #[serde(default = "default_success_threshold")]
     pub success_threshold: u32,
 
-    /// Consecutive failures before unhealthy (default: 3)
+    /// Consecutive failures before unhealthy (default: 3).
     #[serde(default = "default_failure_threshold")]
     pub failure_threshold: u32,
 
@@ -282,6 +283,36 @@ impl From<HealthCheckProbe> for common::structure::HealthCheckProbe {
                 host,
                 schema,
             },
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Watch {
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    extensions: Vec<String>,
+    #[serde(default)]
+    ignore: Vec<String>,
+}
+
+impl Watch {
+    pub fn to_watch(self, config_path: &Path) -> common::structure::Watch {
+        let root_dir = config_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get the parent directory"))
+            .unwrap();
+
+        common::structure::Watch {
+            paths: self
+                .paths
+                .iter()
+                .map(PathBuf::from)
+                .map(|p| PathBuf::from(p.absolutize_from(root_dir)))
+                .collect(),
+            extensions: self.extensions,
+            ignore: self.ignore,
         }
     }
 }

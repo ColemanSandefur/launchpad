@@ -29,7 +29,12 @@ return {
         },
         color = {
             command = "cargo",
-            args = {"help"}
+            args = {"help"},
+            watch = {
+                paths = { "./" },
+                extensions = { "rs", "toml" },
+                ignore = { "**/target/**/*" },
+            },
         },
         depends = {
             command = "python",

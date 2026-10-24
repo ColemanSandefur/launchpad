@@ -15,6 +15,7 @@ dotenvy = { workspace = true }
 futures = { workspace = true }
 interprocess = { workspace = true }
 mlua = { workspace = true }
+path-absolutize = { workspace = true }
 postcard = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
