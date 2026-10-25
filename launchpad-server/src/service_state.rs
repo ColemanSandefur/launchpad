@@ -27,16 +27,16 @@ impl ServiceState {
     }
 }
 
-impl From<ServiceState> for common::message::ServiceState {
+impl From<ServiceState> for launchpad_common::message::ServiceState {
     fn from(value: ServiceState) -> Self {
         match value {
-            ServiceState::Pending => common::message::ServiceState::Pending,
-            ServiceState::Starting => common::message::ServiceState::Starting,
-            ServiceState::Healthy => common::message::ServiceState::Healthy,
-            ServiceState::Unhealthy => common::message::ServiceState::Unhealthy,
-            ServiceState::Stopping => common::message::ServiceState::Stopping,
-            ServiceState::Stopped => common::message::ServiceState::Stopped,
-            ServiceState::Failed => common::message::ServiceState::Failed,
+            ServiceState::Pending => launchpad_common::message::ServiceState::Pending,
+            ServiceState::Starting => launchpad_common::message::ServiceState::Starting,
+            ServiceState::Healthy => launchpad_common::message::ServiceState::Healthy,
+            ServiceState::Unhealthy => launchpad_common::message::ServiceState::Unhealthy,
+            ServiceState::Stopping => launchpad_common::message::ServiceState::Stopping,
+            ServiceState::Stopped => launchpad_common::message::ServiceState::Stopped,
+            ServiceState::Failed => launchpad_common::message::ServiceState::Failed,
         }
     }
 }

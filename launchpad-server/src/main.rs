@@ -8,7 +8,7 @@ mod service_state;
 use std::{collections::HashMap, io, sync::Arc, time::Duration};
 
 use anyhow::Result;
-use common::{
+use launchpad_common::{
     Channel,
     message::{ServerRequest, ServerResponse, ServiceLogResponse, StatusResponse},
 };
@@ -150,7 +150,7 @@ async fn handle_event(
                 .map(|(name, service)| {
                     (
                         name.clone(),
-                        common::message::ServiceStatus {
+                        launchpad_common::message::ServiceStatus {
                             state: service.status().into(),
                         },
                     )

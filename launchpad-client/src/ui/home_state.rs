@@ -1,7 +1,7 @@
 use ansi_to_tui::IntoText;
 use bb8::Pool;
-use common::message::ServiceState;
 use crossterm::event::{Event, KeyCode};
+use launchpad_common::message::ServiceState;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},

@@ -4,7 +4,7 @@ mod connection_manager;
 pub mod project_config;
 pub mod ui;
 
-use std::{os::unix::ffi::OsStrExt, path::PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -82,7 +82,7 @@ async fn main() -> Result<()> {
 
     let config = ProjectConfig::load(&config_path).await?;
 
-    let id = ChannelId::encode(config_path.as_os_str().as_bytes());
+    let id = ChannelId::encode(config_path.as_os_str().as_encoded_bytes());
     let mut api = Api::connect(id.clone()).await?;
 
     match args.command {

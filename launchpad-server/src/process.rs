@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use common::structure::{HealthCheck, HealthCheckProbe, Service};
+use launchpad_common::structure::{HealthCheck, HealthCheckProbe, Service};
 use portable_pty::{ChildKiller, PtySize, native_pty_system};
 use reqwest::{Client, Url};
 use tokio::{

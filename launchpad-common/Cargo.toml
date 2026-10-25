@@ -1,5 +1,5 @@
 [package]
-name = "common"
+name = "launchpad-common"
 version = "0.1.0"
 edition.workspace = true
 

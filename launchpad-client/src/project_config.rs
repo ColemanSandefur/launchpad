@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use common::structure::{Service, Structure};
+use launchpad_common::structure::{Service, Structure};
 use mlua::{Lua, LuaSerdeExt};
 use path_absolutize::Absolutize;
 use serde::{Deserialize, Serialize};
@@ -220,9 +220,9 @@ fn default_failure_threshold() -> u32 {
     3
 }
 
-impl From<HealthCheck> for common::structure::HealthCheck {
+impl From<HealthCheck> for launchpad_common::structure::HealthCheck {
     fn from(value: HealthCheck) -> Self {
-        common::structure::HealthCheck {
+        launchpad_common::structure::HealthCheck {
             probe: value.probe.into(),
             initial_delay: Duration::from_secs(value.initial_delay.into()),
             period: Duration::from_secs(value.period.into()),
@@ -269,7 +269,7 @@ fn default_schema() -> String {
     "http".to_string()
 }
 
-impl From<HealthCheckProbe> for common::structure::HealthCheckProbe {
+impl From<HealthCheckProbe> for launchpad_common::structure::HealthCheckProbe {
     fn from(value: HealthCheckProbe) -> Self {
         match value {
             HealthCheckProbe::Http {
@@ -277,7 +277,7 @@ impl From<HealthCheckProbe> for common::structure::HealthCheckProbe {
                 path,
                 host,
                 schema,
-            } => common::structure::HealthCheckProbe::Http {
+            } => launchpad_common::structure::HealthCheckProbe::Http {
                 port,
                 path,
                 host,
@@ -298,13 +298,13 @@ pub struct Watch {
 }
 
 impl Watch {
-    pub fn to_watch(self, config_path: &Path) -> common::structure::Watch {
+    pub fn to_watch(self, config_path: &Path) -> launchpad_common::structure::Watch {
         let root_dir = config_path
             .parent()
             .ok_or_else(|| anyhow::anyhow!("Failed to get the parent directory"))
             .unwrap();
 
-        common::structure::Watch {
+        launchpad_common::structure::Watch {
             paths: self
                 .paths
                 .iter()

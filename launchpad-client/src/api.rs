@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-use common::{
-    Channel, ReceiveError, SendError,
-    message::{ServerRequest, ServerResponse, ServiceLogResponse, StatusResponse},
-    structure::Structure,
-};
 use interprocess::local_socket::{
     GenericNamespaced,
     tokio::{Stream, prelude::*},
+};
+use launchpad_common::{
+    Channel, ReceiveError, SendError,
+    message::{ServerRequest, ServerResponse, ServiceLogResponse, StatusResponse},
+    structure::Structure,
 };
 use thiserror::Error;
 

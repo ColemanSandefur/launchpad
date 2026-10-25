@@ -5,8 +5,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use common::structure::{Service, Watch};
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use launchpad_common::structure::{Service, Watch};
 use notify::{RecommendedWatcher, Watcher};
 use tokio::{
     sync::{Mutex, watch},
