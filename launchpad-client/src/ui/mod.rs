@@ -5,7 +5,7 @@ use std::{io, time::Duration};
 
 use bb8::Pool;
 use crossterm::{
-    event::{Event, EventStream, KeyCode, KeyModifiers},
+    event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -51,6 +51,9 @@ async fn run_tui_loop(
             // Handle terminal input events
             Some(Ok(event)) = reader.next() => {
                 if let Event::Key(key) = event {
+                    if key.kind == KeyEventKind::Release {
+                        continue;
+                    }
                     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                         break;
                     }
