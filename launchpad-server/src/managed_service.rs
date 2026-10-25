@@ -84,7 +84,6 @@ fn build_watcher(watch: &Watch) -> Result<WatcherData> {
     Ok(WatcherData { watcher, rx })
 }
 
-#[derive(Debug)]
 pub struct ManagedService {
     child: Arc<Mutex<Option<Process>>>,
     service: Box<Service>,

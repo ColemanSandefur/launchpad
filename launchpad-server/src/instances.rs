@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 
 use crate::managed_service::ManagedService;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Instances {
     instances: HashMap<String, Arc<Mutex<Services>>>,
 }
