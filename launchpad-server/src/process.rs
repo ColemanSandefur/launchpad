@@ -1,8 +1,8 @@
 use std::{
     ffi::OsStr,
-    io::{BufRead, BufReader, Read},
+    io::{Read, Write},
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
 
@@ -17,9 +17,10 @@ use tokio::{
 
 use crate::{log::LogBuffer, service_state::ServiceState};
 
-#[derive(Debug)]
 pub struct Process {
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    _pty_master: Box<dyn portable_pty::MasterPty + Send>,
+    pty_writer: Arc<StdMutex<Option<Box<dyn Write + Send>>>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     log_thread: JoinHandle<()>,
     health_check_thread: JoinHandle<Result<()>>,
@@ -53,6 +54,7 @@ impl Process {
             .slave
             .spawn_command(cmd)
             .context("Failed to start the command")?;
+        drop(pair.slave);
 
         let killer = child.clone_killer();
 
@@ -60,13 +62,19 @@ impl Process {
             .master
             .try_clone_reader()
             .context("Failed to clone PTY reader")?;
+        let writer = pair
+            .master
+            .take_writer()
+            .context("Failed to take PTY writer")?;
+        let pty_master = pair.master;
+        let writer = Arc::new(StdMutex::new(Some(writer)));
 
         let child = Arc::new(Mutex::new(child));
 
         let log_thread = {
             let log_buffer = log_buffer.clone();
-            let health_rx = health_rx.clone();
-            tokio::task::spawn_blocking(move || Self::monitor_logs(reader, log_buffer, health_rx))
+            let pty_writer = writer.clone();
+            tokio::task::spawn_blocking(move || Self::monitor_logs(reader, pty_writer, log_buffer))
         };
 
         let health_check_thread = tokio::spawn(Self::monitor_health(
@@ -77,12 +85,15 @@ impl Process {
 
         let exit_monitor_thread = tokio::spawn(Self::monitor_exit(
             child.clone(),
+            writer.clone(),
             health_tx.clone(),
             health_rx.clone(),
         ));
 
         Ok(Self {
             child,
+            _pty_master: pty_master,
+            pty_writer: writer,
             killer,
             log_thread,
             health_check_thread,
@@ -97,26 +108,67 @@ impl Process {
 
         // Kill the child process
         let _ = self.child.lock().await.kill();
+        self.pty_writer.lock().unwrap().take();
 
         let _ = self.health_tx.send(ServiceState::Stopped);
     }
 
-    fn monitor_logs<R>(inner: R, buffer: LogBuffer, health_rx: watch::Receiver<ServiceState>)
-    where
+    fn monitor_logs<R>(
+        mut reader: R,
+        writer: Arc<StdMutex<Option<Box<dyn Write + Send>>>>,
+        buffer: LogBuffer,
+    ) where
         R: Read + Send,
     {
-        let buf_reader = BufReader::new(inner);
-        let mut lines = buf_reader.lines();
-
         let rt = tokio::runtime::Handle::current();
+        let cursor_query = b"\x1b[6n";
+        let cursor_response = b"\x1b[1;1R";
+        let mut pending = Vec::new();
+        let mut line = Vec::new();
+        let mut chunk = [0; 8192];
 
-        while !health_rx.borrow().is_dead() {
-            match lines.next() {
-                Some(Ok(line)) => {
-                    rt.block_on(buffer.push(line));
+        loop {
+            let count = match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => count,
+                Err(error) => {
+                    eprintln!("Failed to read PTY output: {error}");
+                    break;
                 }
-                _ => break,
+            };
+
+            for byte in &chunk[..count] {
+                pending.push(*byte);
+                while !cursor_query.starts_with(&pending) {
+                    let byte = pending.remove(0);
+                    if byte == b'\n' {
+                        if line.last() == Some(&b'\r') {
+                            line.pop();
+                        }
+                        rt.block_on(buffer.push(String::from_utf8_lossy(&line).into_owned()));
+                        line.clear();
+                    } else {
+                        line.push(byte);
+                    }
+                }
+
+                if pending == cursor_query {
+                    let response_result = match writer.lock().unwrap().as_mut() {
+                        Some(writer) => writer.write_all(cursor_response),
+                        None => return,
+                    };
+                    if let Err(error) = response_result {
+                        eprintln!("Failed to respond to PTY cursor-position query: {error}");
+                        return;
+                    }
+                    pending.clear();
+                }
             }
+        }
+
+        line.extend(pending);
+        if !line.is_empty() {
+            rt.block_on(buffer.push(String::from_utf8_lossy(&line).into_owned()));
         }
         println!("Leaving monitor_logs (PTY)");
     }
@@ -195,6 +247,7 @@ impl Process {
 
     async fn monitor_exit(
         child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+        pty_writer: Arc<StdMutex<Option<Box<dyn Write + Send>>>>,
         health_tx: watch::Sender<ServiceState>,
         health_rx: watch::Receiver<ServiceState>,
     ) {
@@ -205,9 +258,11 @@ impl Process {
             match guard.try_wait() {
                 Ok(Some(status)) => {
                     drop(guard);
+                    pty_writer.lock().unwrap().take();
                     let new_state = if status.success() {
                         ServiceState::Stopped
                     } else {
+                        println!("Child exited with status: {status}");
                         ServiceState::Failed
                     };
                     let _ = health_tx.send(new_state);
@@ -218,6 +273,7 @@ impl Process {
                 }
                 Err(_) => {
                     drop(guard);
+                    pty_writer.lock().unwrap().take();
                     let _ = health_tx.send(ServiceState::Failed);
                     break;
                 }
@@ -235,6 +291,7 @@ impl Drop for Process {
         if let Err(e) = self.killer.kill() {
             eprintln!("Failed to kill PTY child on drop: {e}");
         }
+        self.pty_writer.lock().unwrap().take();
 
         // Kill all the worker threads
         self.log_thread.abort();
